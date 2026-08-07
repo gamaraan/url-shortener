@@ -383,47 +383,75 @@ zero-dependency path.
 
 ## 6. CI/CD (GitHub Actions)
 
-Workflow file: `.github/workflows/build-deploy.yml`. Triggers on push to
-`main` and on manual dispatch.
+Two workflows under `.github/workflows/`, both linted with **actionlint** and
+**shellcheck** before being committed/PR'd (see the `lint-github-actions` skill).
 
-Steps:
+### 6.1 `unit-tests.yml` — CI gate on feature branches
 
-1. **Detect changes** (dorny/paths-filter or `git diff` against the previous
-   commit): determine whether `backend/**` and/or `frontend/**` changed. If
-   neither changed, skip build/deploy for both.
-2. **Per-service build & push** (only for changed folders):
-   - Log in to GHCR using `GITHUB_TOKEN` (or a PAT secret).
-   - Compute the folder-specific date + 8-char SHA tag (§5).
-   - `docker build` the folder's image and push it to
-     `ghcr.io/<owner>/<repo>/<service>:<tag>`.
-3. **Update `values.yaml`**: rewrite the `tag` for each changed service in
-     `charts/url-shortener/values.yaml` and commit the file back to the
-     branch (or pass via `--set` at deploy time). The committed `values.yaml`
-     is the source of truth for deployed versions.
-4. **Deploy with Helm**: configure kubeconfig from the `KUBECONFIG` secret
-     (base64), then
+- **Trigger**: push to any branch **except `main`**, and pull requests.
+- **Purpose**: fast feedback — run the unit tests for both components so a
+  broken branch never reaches `main`. Does **not** build images or deploy.
+- **Jobs**:
+  - **backend**: set up Go, `cd backend && go vet ./... && go test ./...`.
+    The Postgres-dependent tests (migrate, store injection, worker advisory
+    lock) use testcontainers and need Docker; the job runs `services:` or the
+    runner Docker daemon, and tests that need Docker `t.Skip` when it is
+    unavailable so the job stays green on runners without Docker.
+  - **frontend-go**: set up Go, `cd frontend && go vet ./... && go test ./...`
+    (the Go server tests).
+  - **frontend-web**: set up Node, `cd frontend/web && npm ci && npm test`
+    (the Vitest + jsdom SPA tests). `npm ci` requires `package-lock.json`
+    (committed).
+- **Concurrency**: cancel in-progress runs for the same branch on new pushes.
+
+### 6.2 `build-deploy.yml` — build + deploy on `main`
+
+- **Trigger**: push to `main` (includes merge commits) and manual dispatch.
+- **Mandatory gate**: run the same unit-test suites as §6.1 first; if any
+  fail, the build/deploy jobs do not run.
+- **Steps**:
+  1. **Detect changes** (`dorny/paths-filter` or `git diff` against the
+     previous commit): determine whether `backend/**` and/or `frontend/**`
+     changed. If neither changed, skip build/deploy (a chart-only change still
+     triggers a `helm upgrade` so the new chart applies — see 6.2 step 5 and
+     task 7.2).
+  2. **Per-service build & push** (only for changed folders):
+     - Log in to GHCR using the default `GITHUB_TOKEN` (`packages: write`).
+     - Compute the folder-specific date + 8-char SHA tag (§5) from the latest
+       commit touching that folder.
+     - `docker build` the folder's image and push it to
+       `ghcr.io/<owner>/<repo>/<service>:<tag>`.
+  3. **Update `values.yaml`**: rewrite the `tag` for each changed service in
+     `charts/url-shortener/values.yaml` and commit the file back to `main`
+     (or pass via `--set` at deploy time). The committed `values.yaml` is the
+     source of truth for deployed versions.
+  4. **Deploy with Helm**: configure kubeconfig from the `KUBECONFIG` secret
+     (base64-decoded), then
      `helm upgrade --install url-shortener ./charts/url-shortener \
-       --namespace url-shortener --create-namespace \
+       --namespace tinyurl --create-namespace \
        -f ./charts/url-shortener/values.yaml`.
      When `postgres.enabled` is true, pass the Postgres credentials from the
      GitHub repository secrets (§6 secrets table) via `--set`/`--set-string`
-     (or a generated, never-committed values overlay) so they are injected into
-     the chart's Postgres `Secret` and from there into the backend. When
-     `postgres.enabled` is false, do not pass any Postgres credentials.
-5. The workflow runs on `ubuntu-latest` and uses the GitHub-provided
-   `GITHUB_TOKEN` for GHCR. Helm is preinstalled on the runner; kubectl is
-   configured from the secret.
+     so they are injected into the chart's Postgres `Secret` and from there
+     into the backend. When `postgres.enabled` is false, do not pass any
+     Postgres credentials.
+  5. **Chart-only guard**: if neither `backend/` nor `frontend/` changed but
+     `charts/**` did, skip the image builds and run only the `helm upgrade` so
+     the new chart applies (image tags unchanged).
+- The workflow runs on `ubuntu-latest` and uses the GitHub-provided
+  `GITHUB_TOKEN` for GHCR. Helm is preinstalled on the runner; kubectl is
+  configured from the secret.
 
 ### Required GitHub secrets
 
 | Secret | Purpose |
 | --- | --- |
-| `KUBECONFIG` | Base64 kubeconfig for the k0s cluster, used by `helm`. |
-| `GHCR_TOKEN` (or `GITHUB_TOKEN`) | Push images to GHCR. The default `GITHUB_TOKEN` is used when sufficient; a PAT secret is used when cross-repo or longer-lived access is needed. |
-| `POSTGRES_HOST` | External Postgres host. Used only when `postgres.enabled` is true. |
-| `POSTGRES_PORT` | External Postgres port (default `5432`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_DB` | External Postgres database name (default `urlshortener`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_USER` | External Postgres username. Used only when `postgres.enabled` is true. |
+| `KUBECONFIG` | Base64 kubeconfig for the cluster, used by `helm`. |
+| `GITHUB_TOKEN` | Push images to GHCR (the default workflow token with `packages: write` is sufficient; no PAT secret needed). |
+| `POSTGRES_HOST` | External Postgres host (`postgres.db.svc.cluster.local`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_PORT` | External Postgres port (`5432`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_DB` | External Postgres database name (`urlshortener`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_USER` | External Postgres username (`urlshortener`). Used only when `postgres.enabled` is true. |
 | `POSTGRES_PASSWORD` | External Postgres password. Used only when `postgres.enabled` is true. |
 | `DATABASE_URL` | Optional full libpq URL; overrides the composed `POSTGRES_*` form when provided. Used only when `postgres.enabled` is true. |
 
@@ -662,17 +690,27 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 7 — GitHub Actions
 
-- [ ] 7.1 `.github/workflows/build-deploy.yml`: change detection
-      (`backend/`, `frontend/`), per-service build + push to GHCR with the
-      date+8-SHA tag (§5), `values.yaml` tag update, `helm upgrade --install`
-      using the `KUBECONFIG` secret (§6); when `postgres.enabled` is true,
-      pass `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`
-      (or `DATABASE_URL`) from GitHub repository secrets to helm via
+- [x] 7.1 `.github/workflows/unit-tests.yml`: on push to any non-`main` branch
+      (and PRs), run `go vet ./...` + `go test ./...` in `backend/` and
+      `frontend/`, and `npm ci` + `npm test` in `frontend/web/`. No build, no
+      deploy. Cancel in-progress runs on new pushes to the same branch.
+- [x] 7.2 `.github/workflows/build-deploy.yml`: on push to `main` (incl. merge
+      commits) and manual dispatch. Mandatory gate: run the same unit-test
+      suites first; on success, detect changes (`backend/`, `frontend/`),
+      per-service build + push to GHCR with the date+8-SHA tag (§5), update the
+      `tag` in `charts/url-shortener/values.yaml` (via an `env:`-mapped Python
+      step so no `${{ }}` lives in the `run:` body), then `helm upgrade --install`
+      into `tinyurl` using the `KUBECONFIG` secret; when `postgres.enabled` is
+      true, pass `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/
+      `POSTGRES_PASSWORD` from GitHub repository secrets to helm via
       `--set`/`--set-string` (never committed to `values.yaml`).
-- [ ] 7.2 Add a `Dockerfile`-only guard so a chart-only change redeploys
-      (helm upgrade) without rebuilding images (tags unchanged).
-- [ ] 7.3 Verify the workflow runs green on a feature branch push to main
-      merge simulation (act or a real dry-run).
+- [x] 7.3 Chart-only guard: if neither `backend/` nor `frontend/` changed but
+      `charts/**` did, the build jobs are skipped and the `deploy` job runs
+      only `helm upgrade` (tags unchanged) so the new chart applies.
+- [x] 7.4 Lint both workflows with **actionlint** and **shellcheck** (zero
+      errors) per the `lint-github-actions` skill; both pass clean. Zizmor
+      security advisories (unpinned `actions/*` SHAs, broad `GITHUB_TOKEN`
+      permissions) are noted as deferred hardening, not lint errors.
 
 ### Phase 8 — Cluster secrets & first deploy
 

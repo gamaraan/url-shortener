@@ -128,6 +128,19 @@ All notable changes to this project are recorded here. Entries follow
   and false. Pi-lens YAML findings on the templates are false positives (raw
   Helm `{{- }}` directives parsed as YAML) and suppressed with
   `# pi-lens-ignore: YAML:0`.
+- Phase 7 (GitHub Actions): two workflows under `.github/workflows/`.
+  `unit-tests.yml` runs `go vet`+`go test` (backend, frontend) and `npm ci`+
+  `npm test` (frontend/web) on push to non-`main` branches and PRs (no
+  build/deploy, concurrency-cancels in-progress runs). `build-deploy.yml` runs
+  on push to `main` (+ dispatch): a mandatory unit-test gate, then per-service
+  GHCR build+push with the `yyyy.mm.dd-xxxxxxxx` tag (from the latest commit
+  touching that folder), a Python-based `values.yaml` tag update committed back
+  to `main`, and `helm upgrade --install` into `tinyurl` using the `KUBECONFIG`
+  secret + the Postgres repository secrets via `--set`/`--set-string`. A
+  chart-only change skips builds and runs only `helm upgrade`. Both workflows
+  pass `actionlint` + `shellcheck` clean (zero errors) per the
+  `lint-github-actions` skill; zizmor security advisories (unpinned action
+  SHAs, broad token permissions) are noted as deferred hardening.
 
 ### Changed
 

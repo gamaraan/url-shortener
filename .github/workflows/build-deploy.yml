@@ -1,0 +1,245 @@
+# Build + deploy on main. Runs the mandatory unit-test gate first; on success,
+# builds/pushes per-service images to GHCR (only for changed folders), updates
+# the image tags in values.yaml, and deploys via Helm into the tinyurl
+# namespace. See development.md §6.2.
+name: build-deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write # commit updated values.yaml back to main
+  packages: write # push images to GHCR
+
+concurrency:
+  group: build-deploy-main
+  cancel-in-progress: false
+
+jobs:
+  # --- mandatory unit-test gate (same suites as unit-tests.yml) ---
+  test-backend:
+    name: backend tests (gate)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: backend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: go vet ./...
+      - run: go test ./...
+
+  test-frontend-go:
+    name: frontend go tests (gate)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: frontend/go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  test-frontend-web:
+    name: frontend web tests (gate)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend/web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/web/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  # --- detect which service folders changed on this push to main ---
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend-go, test-frontend-web]
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      charts: ${{ steps.filter.outputs.charts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need history for diff against the previous commit
+      - id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            {
+              echo "backend=true"
+              echo "frontend=true"
+              echo "charts=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # On push to main, diff against the previous commit.
+          backend_changed=false
+          frontend_changed=false
+          charts_changed=false
+          if git diff --name-only HEAD~1 HEAD -- backend/ | grep -q .; then
+            backend_changed=true
+          fi
+          if git diff --name-only HEAD~1 HEAD -- frontend/ | grep -q .; then
+            frontend_changed=true
+          fi
+          if git diff --name-only HEAD~1 HEAD -- charts/ | grep -q .; then
+            charts_changed=true
+          fi
+          {
+            echo "backend=$backend_changed"
+            echo "frontend=$frontend_changed"
+            echo "charts=$charts_changed"
+          } >> "$GITHUB_OUTPUT"
+
+  # --- build + push the backend image if backend/ changed ---
+  build-backend:
+    name: build & push backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: tag
+        run: |
+          set -euo pipefail
+          sha=$(git rev-list -1 --pretty=%H -- backend/ | tail -1 | tr -d ' ')
+          short_sha=$(git rev-parse --short=8 "$sha")
+          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' --date=format-short -- backend/)
+          tag="${date}-${short_sha}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Computed backend tag: $tag"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/backend:${{ steps.tag.outputs.tag }}
+
+  # --- build + push the frontend image if frontend/ changed ---
+  build-frontend:
+    name: build & push frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: tag
+        run: |
+          set -euo pipefail
+          sha=$(git rev-list -1 --pretty=%H -- frontend/ | tail -1 | tr -d ' ')
+          short_sha=$(git rev-parse --short=8 "$sha")
+          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' --date=format-short -- frontend/)
+          tag="${date}-${short_sha}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Computed frontend tag: $tag"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/frontend:${{ steps.tag.outputs.tag }}
+
+  # --- update values.yaml tags and deploy via helm ---
+  deploy:
+    name: helm deploy
+    needs: [changes, build-backend, build-frontend]
+    # Run when change detection succeeded and no build job failed (skipped
+    # builds are OK — they mean that service didn't change).
+    if: always() && needs.changes.result == 'success' && needs.build-backend.result != 'failure' && needs.build-frontend.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: update values.yaml tags
+        env:
+          BACKEND_TAG: ${{ needs.build-backend.outputs.tag }}
+          FRONTEND_TAG: ${{ needs.build-frontend.outputs.tag }}
+          BACKEND_RESULT: ${{ needs.build-backend.result }}
+          FRONTEND_RESULT: ${{ needs.build-frontend.result }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, pathlib
+          values = pathlib.Path("charts/url-shortener/values.yaml")
+          s = values.read_text()
+          if os.environ.get("BACKEND_RESULT") == "success":
+              tag = os.environ["BACKEND_TAG"]
+              s = re.sub(
+                  r'(backend:\s*\n(?:  [^\n]*\n)*?  image:\s*\n    repository:[^\n]*\n    tag: ).*',
+                  r'\g<1>"' + tag + '"',
+                  s, count=1, flags=re.M,
+              )
+          if os.environ.get("FRONTEND_RESULT") == "success":
+              tag = os.environ["FRONTEND_TAG"]
+              s = re.sub(
+                  r'(frontend:\s*\n(?:  [^\n]*\n)*?  image:\s*\n    repository:[^\n]*\n    tag: ).*',
+                  r'\g<1>"' + tag + '"',
+                  s, count=1, flags=re.M,
+              )
+          values.write_text(s)
+          PY
+          echo "--- updated values.yaml image sections ---"
+          grep -n -A1 'repository:' "charts/url-shortener/values.yaml"
+      - name: commit updated values.yaml
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet charts/url-shortener/values.yaml; then
+            echo "values.yaml unchanged; skipping commit"
+          else
+            git add charts/url-shortener/values.yaml
+            git commit -m "chore(chart): update image tags [skip ci]"
+            git push
+          fi
+      - name: configure kubeconfig
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kube"
+          printf '%s' "${{ secrets.KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          export KUBECONFIG="$HOME/.kube/config"
+          echo "KUBECONFIG=$KUBECONFIG" >> "$GITHUB_ENV"
+      - name: helm deploy
+        run: |
+          set -euo pipefail
+          # Build the postgres credential --set flags (postgres.enabled is true).
+          helm upgrade --install url-shortener ./charts/url-shortener \
+            --namespace tinyurl --create-namespace \
+            -f ./charts/url-shortener/values.yaml \
+            --set postgres.host="${{ secrets.POSTGRES_HOST }}" \
+            --set postgres.port="${{ secrets.POSTGRES_PORT }}" \
+            --set postgres.database="${{ secrets.POSTGRES_DB }}" \
+            --set postgres.user="${{ secrets.POSTGRES_USER }}" \
+            --set-string postgres.password="${{ secrets.POSTGRES_PASSWORD }}"
