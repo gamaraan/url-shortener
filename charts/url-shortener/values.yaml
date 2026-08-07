@@ -59,7 +59,7 @@ postgres:
 ingress:
   enabled: true
   className: "nginx"
-  host: "short.example.com"
+  host: "tinyurl.gamara.ro"
   tls:
     enabled: true
     clusterIssuer: "letsencrypt-prod"
