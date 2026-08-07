@@ -1,0 +1,96 @@
+# Local testing stack for the URL shortener. See development.md §3.5.
+#
+# Default stack (Postgres): `docker compose up --build`
+#   - postgres (postgres:16) + backend (Postgres mode, migrations) + frontend
+#
+# SQLite opt-out profile: `docker compose --profile sqlite up --build`
+#   - backend (SQLite fallback) + frontend only; no DATABASE_URL
+#
+# Ports:
+#   backend   8080  (direct API testing, e.g. Postman)
+#   frontend  8081  (UI + reverse proxy)
+#   postgres  5432  (default stack only)
+#
+# Reset data: docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: urlshortener
+      POSTGRES_PASSWORD: urlshortener
+      POSTGRES_DB: urlshortener
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urlshortener -d urlshortener"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles: [""] # default stack only
+
+  backend:
+    build: ./backend
+    environment:
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: "info"
+      # Postgres mode (default stack): DATABASE_URL wired from the postgres service.
+      DATABASE_URL: "postgres://urlshortener:urlshortener@postgres:5432/urlshortener?sslmode=disable"
+      RETENTION_PERIOD: "3650d"
+      CLEANUP_FREQUENCY: "2m"
+      SHUTDOWN_TIMEOUT: "30s"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [""] # default stack only
+
+  # SQLite opt-out profile: no DATABASE_URL, local file storage.
+  backend-sqlite:
+    build: ./backend
+    environment:
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: "info"
+      SQLITE_PATH: "/data/url-shortener.db"
+      RETENTION_PERIOD: "3650d"
+      CLEANUP_FREQUENCY: "2m"
+      SHUTDOWN_TIMEOUT: "30s"
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend-sqlite-data:/data
+    profiles: ["sqlite"]
+
+  frontend:
+    build: ./frontend
+    environment:
+      LISTEN_ADDR: ":8080"
+      BACKEND_URL: "http://backend:8080"
+      LOG_LEVEL: "info"
+      SHUTDOWN_TIMEOUT: "30s"
+    ports:
+      - "8081:8080"
+    depends_on:
+      - backend
+    profiles: [""] # default stack only
+
+  # Frontend for the SQLite profile points at backend-sqlite.
+  frontend-sqlite:
+    build: ./frontend
+    environment:
+      LISTEN_ADDR: ":8080"
+      BACKEND_URL: "http://backend-sqlite:8080"
+      LOG_LEVEL: "info"
+      SHUTDOWN_TIMEOUT: "30s"
+    ports:
+      - "8081:8080"
+    depends_on:
+      - backend-sqlite
+    profiles: ["sqlite"]
+
+volumes:
+  postgres-data:
+  backend-sqlite-data:

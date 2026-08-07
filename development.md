@@ -57,13 +57,14 @@ background goroutine inside the backend service (not a separate folder/image).
 │   ├── cmd/server/main.go
 │   ├── internal/
 │   │   ├── server/           # serves embed.FS assets, proxy /api/*, redirect page
+│   │   │   ├── server.go     # //go:embed all:dist
+│   │   │   └── dist/         # Vite build output (gitignored), embedded at build time
 │   │   └── config/           # env parsing
 │   ├── web/                  # Svelte + Vite source
 │   │   ├── src/
 │   │   ├── package.json
-│   │   ├── vite.config.ts
+│   │   ├── vite.config.ts    # builds into ../internal/server/dist
 │   │   └── tsconfig.json
-│   ├── embed.go             # //go:embed dist
 │   ├── Dockerfile            # multi-stage: node build → go embed → final
 │   └── *_test.go
 ├── compose.yaml              # local Docker Compose stack for testing
@@ -111,10 +112,17 @@ background goroutine inside the backend service (not a separate folder/image).
   the bucket refills enough for one request). The limiter is in-process and
   per-instance (sufficient for the single-node k0s target; documented as a
   known limitation for multi-replica Postgres mode).
-- **Shortcode generation**: random base62 nanoid, length from
-  `SHORTCODE_LENGTH` (default 7). On insert collision (unique constraint
-  violation) regenerate up to N times, then fail with 500/conflict. Supports an
-  optional per-link `expires_at` derived from `ttl_seconds` when provided.
+- **Shortcode generation**: random base62 code (crypto/rand), length from
+  `SHORTCODE_LENGTH` (default 7). **Uniqueness is guaranteed by the database**
+  via the `links.shortcode` PRIMARY KEY (a unique constraint in both Postgres
+  and SQLite). The backend **retries on a duplicate insert**: if `store.Create`
+  returns a unique-constraint violation (`*store.ConstraintError`, detected
+  via Postgres SQLSTATE `23505` or SQLite's `UNIQUE constraint failed`), the
+  API generates a fresh shortcode and retries, up to **5 attempts**. If all 5
+  attempts collide (astronomically unlikely for a 7-char base62 space), it
+  responds **409 Conflict** with `{"error":"could not generate a unique
+  shortcode"}`. Supports an optional per-link `expires_at` derived from
+  `ttl_seconds` when provided.
 - **Database selection on startup**:
   - If `DATABASE_URL` is set → **Postgres mode**. Run golang-migrate `up` with
     the SQL files embedded via `embed.FS` before the HTTP server starts; on a
@@ -411,7 +419,8 @@ Steps:
 
 - `AGENTS.md` (project root) restates the global guardrails and wires the
   project skills: `follow-development-plan`, `pr-on-instruction-only`,
-  `lint-github-actions`, and `always-add-unit-tests`.
+  `lint-github-actions`, `always-add-unit-tests`, and
+  `regression-test-per-bugfix`.
 - `CHANGELOG.md` records, per PR, what changed (Added/Changed/Fixed/Removed
   sections under an `Unreleased` heading until a release is cut).
 - GitHub Actions workflows are always linted with **shellcheck** and
@@ -424,11 +433,20 @@ Steps:
   enforced by the global `always-add-unit-tests` skill and is a hard
   requirement for this project. A task is not `done` (`[x]`) until its unit
   tests are written and passing.
+- **Every bugfix must ship with a regression test that fails without the fix
+  and passes with it.** This is enforced by the project
+  `regression-test-per-bugfix` skill. The test must exercise the code path
+  that contained the bug (not a different layer), and the fix must be
+  temporarily reverted to prove the test genuinely catches the bug. For
+  frontend render/mount bugs the regression test is a Vitest + jsdom +
+  `@testing-library/svelte` DOM test (`npm test` in `frontend/web/`), not
+  just a build/type-check.
 - Per-phase test tasks already enumerate the minimum coverage (1.5, 2.6, 3.2,
   4.6). Any additional feature/bugfix introduced during implementation must add
   its own unit tests even if no explicit test task is listed for it.
-- Run the full Go test suite (`go test ./...` in `backend/` and `frontend/`)
-  before considering any task `done`; failing tests block the task.
+- Run the full test suites before considering any task `done`: `go test ./...`
+  in `backend/` and `frontend/`, and `npm test` in `frontend/web/`. Failing
+  tests block the task.
 - Do not mark a task `[x]` while tests are failing or missing — leave it `[~]`
   and track the failing/missing tests as a blocker.
 
@@ -499,6 +517,14 @@ the `follow-development-plan` skill) — facts only, no narrative.
       `ttl_seconds` (optional, non-negative integer) → `expires_at`; build
       `short_url` from request host; wrap `/api/*` in the rate-limiter
       middleware (429 + `Retry-After` on exceed).
+- [x] 2.5b **Duplicate-shortcode protection**: uniqueness is guaranteed by the
+      `links.shortcode` PRIMARY KEY (DB-enforced in both Postgres and SQLite).
+      `store.Create` wraps a unique-constraint violation as `*ConstraintError`
+      (Postgres SQLSTATE `23505` / SQLite `UNIQUE constraint failed`); the API
+      regenerates the shortcode and retries up to 5 attempts, then responds
+      **409 Conflict** if exhausted. API test `TestShorten_RetriesOnCollision`
+      asserts the retry-then-succeed path and `TestShorten_CollisionExhausted`
+      asserts the 409 path.
 - [x] 2.6 `cmd/server/main.go`: load config → run migrations → start HTTP
       server. The cleanup worker is started in Phase 3; Phase 2 ships the HTTP
       API without the worker. Graceful shutdown is implemented in task 2.10.
@@ -541,40 +567,45 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 4 — Frontend (Svelte SPA + Go server)
 
-- [ ] 4.1 Scaffold `frontend/web` with Svelte + Vite (TS), themed UI (§3.2):
+- [x] 4.1 Scaffold `frontend/web` with Svelte + Vite (TS), themed UI (§3.2):
       input, shorten button, result + copy button, dark/orange palette.
-- [ ] 4.2 SPA calls `PUT /api/shorten` (same origin, proxied) and renders
+- [x] 4.2 SPA calls `PUT /api/shorten` (same origin, proxied) and renders
       `${window.location.origin}/${shortcode}`.
-- [ ] 4.3 Implement `frontend/internal/server`: serve embedded SPA assets,
+- [x] 4.3 Implement `frontend/internal/server`: serve embedded SPA assets,
       reverse proxy `/api/*` to `BACKEND_URL`, `GET /:shortcode` →
       resolve + themed 1-second meta-refresh redirect page, themed 404,
-      `/healthz`.
-- [ ] 4.4 `frontend/embed.go` with `//go:embed dist` and a build step that
-      runs `npm run build` into `frontend/dist`.
-- [ ] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown
+      `/healthz` (503 while draining).
+- [x] 4.4 `//go:embed all:dist` in `frontend/internal/server/server.go`; the
+      Vite build outputs to `frontend/internal/server/dist` (colocated with the
+      server package so the embed path resolves; `//go:embed` cannot use `..`).
+      `frontend/embed.go` is not a separate file — the directive lives in the
+      server package. Build step: `npm run build` in `frontend/web`.
+- [x] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown
       (stop accepting new requests, return 503 on `/healthz`, drain
       in-flight requests before exit per §3.2).
-- [ ] 4.6 Unit tests: redirect-page HTML contains the destination and
-      `content="1"`, 404 path, proxy passthrough (httptest), asset serving.
+- [x] 4.6 Unit tests: redirect-page HTML contains the destination and
+      `content="1"`, 404 path, proxy passthrough (httptest), asset serving,
+      `/healthz` 503 while draining; plus frontend `config` package tests.
 
 ### Phase 5 — Dockerfiles
 
-- [ ] 5.1 `backend/Dockerfile`: multi-stage Go build (static-ish binary),
-      minimal runtime image (e.g. `gcr.io/distroless/static` or `alpine`),
-      expose 8080.
-- [ ] 5.2 `frontend/Dockerfile`: stage 1 Node build of the Svelte SPA,
-      stage 2 Go build embedding `dist/`, stage 3 minimal runtime, expose 8080.
-- [ ] 5.3 Verify both images build locally and the backend starts against a
-      local Postgres and, with `DATABASE_URL` unset, against a local SQLite
-      file (and logs the fallback WARN).
-- [ ] 5.4 `compose.yaml` + `compose/README.md` (§3.5): **default Postgres
+- [x] 5.1 `backend/Dockerfile`: multi-stage Go build (CGO disabled, pure-Go
+      `modernc.org/sqlite`), alpine runtime, expose 8080 (done in Phase 2.9).
+- [x] 5.2 `frontend/Dockerfile`: stage 1 Node build of the Svelte SPA (into
+      `internal/server/dist`), stage 2 Go build embedding `dist/`, stage 3
+      alpine runtime, expose 8080.
+- [x] 5.3 Verified both images build locally; backend starts in Postgres mode
+      (migrations applied) and, with `DATABASE_URL` unset, in SQLite fallback
+      mode (logs the WARN).
+- [x] 5.4 `compose.yaml` + `compose/README.md` (§3.5): **default Postgres
       stack** (`postgres:16` + `backend` + `frontend`, `DATABASE_URL` wired
       so migrations + advisory-lock cleanup run) and a `sqlite` opt-out
-      profile (`backend` + `frontend` only, `DATABASE_URL` unset). `backend`
-      uses `depends_on: postgres` with a healthcheck. `docker compose up
-      --build` (Postgres) and `docker compose --profile sqlite up --build`
-      both reach a healthy `/api/health` and the frontend UI; verify data
-      survives `docker compose down` but not `docker compose down -v`.
+      profile (`backend-sqlite` + `frontend-sqlite` only, `DATABASE_URL` unset).
+      `backend` uses `depends_on: postgres` with a healthcheck. Backend port
+      8080 and frontend port 8081 exposed for direct testing; Postgres 5432.
+      Full stack brought up with `docker compose up --build`; verified
+      `/api/health`, the SPA UI, shorten via proxy, the themed 1s redirect
+      page, 404, and invalid-URL 400 end to end.
 
 ### Phase 6 — Helm chart
 

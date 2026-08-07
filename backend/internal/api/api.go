@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,14 +18,24 @@ import (
 	"time"
 
 	"github.com/gamaraan/url-shortener/backend/internal/ratelimit"
-	"github.com/gamaraan/url-shortener/backend/internal/shortcode"
 	"github.com/gamaraan/url-shortener/backend/internal/store"
 )
 
+// Storer is the subset of the store the API needs. *store.Store satisfies it.
+type Storer interface {
+	Create(ctx context.Context, shortcode, destination string, expiresAt sql.NullTime) error
+	Get(ctx context.Context, shortcode string) (store.Link, error)
+}
+
+// Generator produces shortcodes. *shortcode.Generator satisfies it.
+type Generator interface {
+	Generate() string
+}
+
 // Server wires the API handlers to a store and shortcode generator.
 type Server struct {
-	store     *store.Store
-	generator *shortcode.Generator
+	store     Storer
+	generator Generator
 	limiter   *ratelimit.Limiter
 	logger    *slog.Logger
 
@@ -34,7 +45,7 @@ type Server struct {
 }
 
 // New builds a Server. The limiter may be nil to disable rate limiting (tests).
-func New(st *store.Store, gen *shortcode.Generator, lim *ratelimit.Limiter, logger *slog.Logger) *Server {
+func New(st Storer, gen Generator, lim *ratelimit.Limiter, logger *slog.Logger) *Server {
 	return &Server{store: st, generator: gen, limiter: lim, logger: logger}
 }
 
