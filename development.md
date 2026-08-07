@@ -46,9 +46,10 @@ background goroutine inside the backend service (not a separate folder/image).
 │   │   ├── worker/           # retention cleanup goroutine
 │   │   ├── migrate/          # embed.FS + golang-migrate runner (Postgres only)
 │   │   ├── sqlite/          # latest-schema bootstrap for the SQLite fallback
+│   │   ├── ratelimit/      # per-IP rate limiter (token bucket) used by the API
 │   │   ├── config/           # env parsing + duration parser
 │   │   └── shortcode/       # nanoid base62 generator + collision check
-│   ├── migrations/           # *.up.sql / *.down.sql (embedded; Postgres only)
+│   ├── internal/migrate/migrations/  # *.up.sql / *.down.sql (embedded; Postgres only)
 │   ├── Dockerfile
 │   └── *_test.go
 ├── frontend/                # Go server embedding Svelte SPA
@@ -91,6 +92,17 @@ background goroutine inside the backend service (not a separate folder/image).
     (if implemented) is a separate concern. Resolution returns the destination
     so the frontend can render the redirect page.
   - Errors are always JSON: `{"error":"…"}` with the appropriate HTTP status.
+- **Rate limiting**: per-client-IP token-bucket limiter applied to all `/api/*`
+  routes. The client IP is taken from `X-Forwarded-For` (last hop) when
+  present, else `RemoteAddr`. Default **100 requests per minute**. Configurable
+  via `RATE_LIMITS` (see §3.4) as `"<count>/<window>"`, e.g. `"100/1m"`,
+  `"30/10s"`, `"1000/1h"`. The window uses the shared duration parser (§3.1).
+  On parse failure it logs the error and falls back to `100/1m`. When a client
+  exceeds the limit the API responds **429 Too Many Requests** with JSON
+  `{"error":"rate limit exceeded"}` and a `Retry-After` header (seconds until
+  the bucket refills enough for one request). The limiter is in-process and
+  per-instance (sufficient for the single-node k0s target; documented as a
+  known limitation for multi-replica Postgres mode).
 - **Shortcode generation**: random base62 nanoid, length from
   `SHORTCODE_LENGTH` (default 7). On insert collision (unique constraint
   violation) regenerate up to N times, then fail with 500/conflict. Supports an
@@ -205,6 +217,7 @@ Backend:
 | `RETENTION_PERIOD` | `3650d` | Global retention; links older than this are deleted. Duration string. |
 | `CLEANUP_FREQUENCY` | `60m` | Cleanup worker tick interval. Duration string. |
 | `SHORTCODE_LENGTH` | `7` | nanoid length. |
+| `RATE_LIMITS` | `100/1m` | Per-client-IP rate limit as `"<count>/<window>"` (e.g. `"100/1m"`, `"30/10s"`). Window uses the duration parser; parse failure logs an error and falls back to `100/1m`. |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`. |
 
 Frontend:
@@ -394,21 +407,23 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 1 — Database & migrations
 
-- [ ] 1.1 Write `backend/migrations/0001_init.up.sql` / `…down.sql` creating
-      the `links` table, indexes, and the partial `expires_at` index for
-      Postgres (§3.3).
-- [ ] 1.2 Implement `backend/internal/migrate` using golang-migrate with the
-      migrations embedded via `embed.FS`; expose `Run(ctx, dbURL) error`.
+- [x] 1.1 Write `backend/internal/migrate/migrations/0001_init.up.sql` /
+      `…down.sql` creating the `links` table, indexes, and the partial
+      `expires_at` index for Postgres (§3.3). Migrations are colocated with
+      the `migrate` package so `//go:embed migrations/*.sql` resolves.
+- [x] 1.2 Implement `backend/internal/migrate` using golang-migrate with the
+      migrations embedded via `embed.FS`; expose `Run(ctx, dbURL) error` and
+      `Down(ctx, dbURL) error` (Down supports the down+up idempotency test).
       Postgres-only.
-- [ ] 1.3 Implement `backend/internal/sqlite`: bootstrap the SQLite file at
+- [x] 1.3 Implement `backend/internal/sqlite`: bootstrap the SQLite file at
       `SQLITE_PATH` with the latest schema directly (`CREATE TABLE IF NOT
       EXISTS` + indexes); no migration files are read. Idempotent.
-- [ ] 1.4 Implement the startup database selection in `cmd/server/main.go`:
+- [x] 1.4 Implement the startup database selection in `cmd/server/main.go`:
       if `DATABASE_URL` set → Postgres mode (run migrations); else → SQLite
       fallback (bootstrap latest schema) and log the WARN that temporary
       storage is in use, data will be lost on restart, and only one backend
       instance may run.
-- [ ] 1.5 Unit tests: Postgres migrations against an ephemeral Postgres
+- [x] 1.5 Unit tests: Postgres migrations against an ephemeral Postgres
       (testcontainers or CI service) assert schema exists and down+up is
       idempotent; SQLite bootstrap is idempotent and creates the expected
       schema.
@@ -418,24 +433,36 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [ ] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
       `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`,
       `SQLITE_PATH`, `LISTEN_ADDR`, `SHORTCODE_LENGTH`, `LOG_LEVEL`,
-      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`; compose `DATABASE_URL` from the
-      `POSTGRES_*` vars when `DATABASE_URL` is unset; central duration parser
-      (§3.1) with fallback + error logging.
+      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`; compose
+      `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is unset;
+      central duration parser (§3.1) with fallback + error logging.
 - [ ] 2.2 Implement `backend/internal/shortcode`: nanoid base62 generator
       keyed on `SHORTCODE_LENGTH`; helper to regenerate on collision.
 - [ ] 2.3 Implement `backend/internal/store`: a storage interface with a
       `pgx` (Postgres) implementation and a SQLite implementation;
       `Create(shortcode, destination, expiresAt)`, `Get(shortcode)`,
-      `DeleteOlderThan(retention)`, `DeleteExpired()`.
-- [ ] 2.4 Implement `backend/internal/api`:
+      `DeleteOlderThan(retention)`, `DeleteExpired()`. All queries use
+      parameterized arguments (no string interpolation of user input); the
+      SQL-injection guard tests (2.7) assert this.
+- [ ] 2.4 Implement `backend/internal/ratelimit`: per-client-IP token-bucket
+      limiter (§3.1) with `RATE_LIMITS` parsing (`"<count>/<window>"`),
+      fallback to `100/1m` on parse failure, and a `Retry-After` hint.
+- [ ] 2.5 Implement `backend/internal/api`:
       `PUT /api/shorten`, `GET /api/resolve/:shortcode`, `GET /api/health`;
       JSON error contract; destination validation; `ttl_seconds` →
-      `expires_at`; build `short_url` from request host.
-- [ ] 2.5 `cmd/server/main.go`: load config → run migrations → start
+      `expires_at`; build `short_url` from request host; wrap `/api/*` in the
+      rate-limiter middleware (429 + `Retry-After` on exceed).
+- [ ] 2.6 `cmd/server/main.go`: load config → run migrations → start
       worker → start HTTP server (graceful shutdown on SIGTERM).
-- [ ] 2.6 Unit tests: shortcode uniqueness/collision, store CRUD against
-      ephemeral Postgres, API handlers (httptest) for success/404/validation
-      paths.
+- [ ] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
+      ephemeral Postgres; API handlers (httptest) for success/404/validation
+      paths; rate-limiter allow/deny + `Retry-After` + parse-fallback behavior.
+- [ ] 2.8 SQL-injection guard tests: against both the Postgres and SQLite
+      store implementations, assert that attacker-controlled `shortcode` /
+      `destination` payloads (e.g. `' OR '1'='1`, `'; DROP TABLE links;--`,
+      `""; --`, unicode/hex escapes) are stored/looked up as literal data and
+      never alter the schema or bypass lookups. Verify the `links` table still
+      exists and contains exactly the inserted rows after the payloads.
 
 ### Phase 3 — Cleanup worker
 
@@ -536,7 +563,9 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - Authentication / per-user link ownership.
 - Analytics / click counting beyond what is needed for redirect.
 - Custom/vanity shortcodes.
-- Rate limiting beyond basic safety (can be added later).
 - Deploying PostgreSQL via this repo's Helm chart (Postgres is always an
   external service).
 - Multi-region or HA Postgres.
+- A distributed/cluster-wide rate limiter — the in-process per-instance
+  limiter (§3.1) is sufficient for the single-node k0s target and is a known
+  approximation under multi-replica Postgres mode.
