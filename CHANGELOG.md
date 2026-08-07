@@ -70,6 +70,25 @@ All notable changes to this project are recorded here. Entries follow
   lock. Wired into `cmd/server` (started after DB ready, canceled on shutdown).
   Unit tests pass: retention boundary, expiry deletion, parse-fallback, and
   Postgres advisory-lock contention (held xact lock forces the worker to skip).
+- Phase 4 (frontend): Svelte + Vite SPA (dark/orange GitHub-dark theme) with
+  shorten + copy UI calling `PUT /api/shorten` (same-origin, proxied) and
+  rendering `${origin}/${shortcode}`; `frontend/internal/server` serves the
+  embedded SPA, reverse-proxies `/api/*` to `BACKEND_URL`, renders the themed
+  1-second meta-refresh redirect page for `GET /:shortcode`, a themed 404, and
+  `/healthz` (503 while draining); `frontend/internal/config` parses
+  `LISTEN_ADDR`/`BACKEND_URL`/`SHUTDOWN_TIMEOUT`/`LOG_LEVEL`; `cmd/server`
+  wires graceful shutdown (set draining, `http.Server.Shutdown` with
+  `SHUTDOWN_TIMEOUT`). Vite builds into `frontend/internal/server/dist`
+  (colocated with the server package for `//go:embed`). Unit tests pass:
+  redirect page (1s meta-refresh + destination), 404, proxy passthrough,
+  asset serving, `/healthz` 503 while draining, and config.
+- Phase 5 (Dockerfiles + compose): `frontend/Dockerfile` (node build → Go
+  embed → alpine runtime); `compose.yaml` + `compose/README.md` with a
+  **default Postgres stack** (`postgres:16` + backend + frontend, `DATABASE_URL`
+  wired, `depends_on` healthcheck) and a `sqlite` opt-out profile. Backend
+  port 8080 and frontend port 8081 exposed for direct testing. Full stack
+  brought up and verified end-to-end (health, SPA UI, shorten via proxy,
+  themed 1s redirect page, 404, invalid-URL 400).
 
 ### Changed
 

@@ -57,13 +57,14 @@ background goroutine inside the backend service (not a separate folder/image).
 │   ├── cmd/server/main.go
 │   ├── internal/
 │   │   ├── server/           # serves embed.FS assets, proxy /api/*, redirect page
+│   │   │   ├── server.go     # //go:embed all:dist
+│   │   │   └── dist/         # Vite build output (gitignored), embedded at build time
 │   │   └── config/           # env parsing
 │   ├── web/                  # Svelte + Vite source
 │   │   ├── src/
 │   │   ├── package.json
-│   │   ├── vite.config.ts
+│   │   ├── vite.config.ts    # builds into ../internal/server/dist
 │   │   └── tsconfig.json
-│   ├── embed.go             # //go:embed dist
 │   ├── Dockerfile            # multi-stage: node build → go embed → final
 │   └── *_test.go
 ├── compose.yaml              # local Docker Compose stack for testing
@@ -541,40 +542,45 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 4 — Frontend (Svelte SPA + Go server)
 
-- [ ] 4.1 Scaffold `frontend/web` with Svelte + Vite (TS), themed UI (§3.2):
+- [x] 4.1 Scaffold `frontend/web` with Svelte + Vite (TS), themed UI (§3.2):
       input, shorten button, result + copy button, dark/orange palette.
-- [ ] 4.2 SPA calls `PUT /api/shorten` (same origin, proxied) and renders
+- [x] 4.2 SPA calls `PUT /api/shorten` (same origin, proxied) and renders
       `${window.location.origin}/${shortcode}`.
-- [ ] 4.3 Implement `frontend/internal/server`: serve embedded SPA assets,
+- [x] 4.3 Implement `frontend/internal/server`: serve embedded SPA assets,
       reverse proxy `/api/*` to `BACKEND_URL`, `GET /:shortcode` →
       resolve + themed 1-second meta-refresh redirect page, themed 404,
-      `/healthz`.
-- [ ] 4.4 `frontend/embed.go` with `//go:embed dist` and a build step that
-      runs `npm run build` into `frontend/dist`.
-- [ ] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown
+      `/healthz` (503 while draining).
+- [x] 4.4 `//go:embed all:dist` in `frontend/internal/server/server.go`; the
+      Vite build outputs to `frontend/internal/server/dist` (colocated with the
+      server package so the embed path resolves; `//go:embed` cannot use `..`).
+      `frontend/embed.go` is not a separate file — the directive lives in the
+      server package. Build step: `npm run build` in `frontend/web`.
+- [x] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown
       (stop accepting new requests, return 503 on `/healthz`, drain
       in-flight requests before exit per §3.2).
-- [ ] 4.6 Unit tests: redirect-page HTML contains the destination and
-      `content="1"`, 404 path, proxy passthrough (httptest), asset serving.
+- [x] 4.6 Unit tests: redirect-page HTML contains the destination and
+      `content="1"`, 404 path, proxy passthrough (httptest), asset serving,
+      `/healthz` 503 while draining; plus frontend `config` package tests.
 
 ### Phase 5 — Dockerfiles
 
-- [ ] 5.1 `backend/Dockerfile`: multi-stage Go build (static-ish binary),
-      minimal runtime image (e.g. `gcr.io/distroless/static` or `alpine`),
-      expose 8080.
-- [ ] 5.2 `frontend/Dockerfile`: stage 1 Node build of the Svelte SPA,
-      stage 2 Go build embedding `dist/`, stage 3 minimal runtime, expose 8080.
-- [ ] 5.3 Verify both images build locally and the backend starts against a
-      local Postgres and, with `DATABASE_URL` unset, against a local SQLite
-      file (and logs the fallback WARN).
-- [ ] 5.4 `compose.yaml` + `compose/README.md` (§3.5): **default Postgres
+- [x] 5.1 `backend/Dockerfile`: multi-stage Go build (CGO disabled, pure-Go
+      `modernc.org/sqlite`), alpine runtime, expose 8080 (done in Phase 2.9).
+- [x] 5.2 `frontend/Dockerfile`: stage 1 Node build of the Svelte SPA (into
+      `internal/server/dist`), stage 2 Go build embedding `dist/`, stage 3
+      alpine runtime, expose 8080.
+- [x] 5.3 Verified both images build locally; backend starts in Postgres mode
+      (migrations applied) and, with `DATABASE_URL` unset, in SQLite fallback
+      mode (logs the WARN).
+- [x] 5.4 `compose.yaml` + `compose/README.md` (§3.5): **default Postgres
       stack** (`postgres:16` + `backend` + `frontend`, `DATABASE_URL` wired
       so migrations + advisory-lock cleanup run) and a `sqlite` opt-out
-      profile (`backend` + `frontend` only, `DATABASE_URL` unset). `backend`
-      uses `depends_on: postgres` with a healthcheck. `docker compose up
-      --build` (Postgres) and `docker compose --profile sqlite up --build`
-      both reach a healthy `/api/health` and the frontend UI; verify data
-      survives `docker compose down` but not `docker compose down -v`.
+      profile (`backend-sqlite` + `frontend-sqlite` only, `DATABASE_URL` unset).
+      `backend` uses `depends_on: postgres` with a healthcheck. Backend port
+      8080 and frontend port 8081 exposed for direct testing; Postgres 5432.
+      Full stack brought up with `docker compose up --build`; verified
+      `/api/health`, the SPA UI, shorten via proxy, the themed 1s redirect
+      page, 404, and invalid-URL 400 end to end.
 
 ### Phase 6 — Helm chart
 

@@ -21,6 +21,7 @@ go.work.sum
 frontend/web/node_modules/
 frontend/web/dist/
 frontend/dist/
+frontend/internal/server/dist/
 dist/
 
 # Editor / OS
