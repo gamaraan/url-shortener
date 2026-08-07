@@ -412,7 +412,8 @@ Steps:
 
 - `AGENTS.md` (project root) restates the global guardrails and wires the
   project skills: `follow-development-plan`, `pr-on-instruction-only`,
-  `lint-github-actions`, and `always-add-unit-tests`.
+  `lint-github-actions`, `always-add-unit-tests`, and
+  `regression-test-per-bugfix`.
 - `CHANGELOG.md` records, per PR, what changed (Added/Changed/Fixed/Removed
   sections under an `Unreleased` heading until a release is cut).
 - GitHub Actions workflows are always linted with **shellcheck** and
@@ -425,11 +426,20 @@ Steps:
   enforced by the global `always-add-unit-tests` skill and is a hard
   requirement for this project. A task is not `done` (`[x]`) until its unit
   tests are written and passing.
+- **Every bugfix must ship with a regression test that fails without the fix
+  and passes with it.** This is enforced by the project
+  `regression-test-per-bugfix` skill. The test must exercise the code path
+  that contained the bug (not a different layer), and the fix must be
+  temporarily reverted to prove the test genuinely catches the bug. For
+  frontend render/mount bugs the regression test is a Vitest + jsdom +
+  `@testing-library/svelte` DOM test (`npm test` in `frontend/web/`), not
+  just a build/type-check.
 - Per-phase test tasks already enumerate the minimum coverage (1.5, 2.6, 3.2,
   4.6). Any additional feature/bugfix introduced during implementation must add
   its own unit tests even if no explicit test task is listed for it.
-- Run the full Go test suite (`go test ./...` in `backend/` and `frontend/`)
-  before considering any task `done`; failing tests block the task.
+- Run the full test suites before considering any task `done`: `go test ./...`
+  in `backend/` and `frontend/`, and `npm test` in `frontend/web/`. Failing
+  tests block the task.
 - Do not mark a task `[x]` while tests are failing or missing — leave it `[~]`
   and track the failing/missing tests as a blocker.
 

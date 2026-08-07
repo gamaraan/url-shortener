@@ -57,6 +57,14 @@ new feature and every bugfix must ship with unit tests. A task in
 tests block the task — leave it `[~]` and track the gap as a blocker rather
 than marking it done.
 
+The project **`regression-test-per-bugfix`** skill is also in force: every
+bugfix must ship with a regression test that **fails without the fix and
+passes with it**. The test must exercise the code path that contained the bug
+(not a different layer), and the fix must be temporarily reverted to prove the
+test genuinely catches the bug. For frontend render/mount bugs the regression
+test is a Vitest + jsdom + `@testing-library/svelte` DOM test (`npm test` in
+`frontend/web/`), not just a build/type-check.
+
 ## Global guardrails (always apply)
 
 - **Git workflow:** never push to `main`; always use a feature branch and a PR.

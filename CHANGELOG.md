@@ -89,6 +89,18 @@ All notable changes to this project are recorded here. Entries follow
   port 8080 and frontend port 8081 exposed for direct testing. Full stack
   brought up and verified end-to-end (health, SPA UI, shorten via proxy,
   themed 1s redirect page, 404, invalid-URL 400).
+- Fixed: blank frontend page — the SPA used the legacy `new App({ target })`
+  constructor, which does not mount under Svelte 5. Switched to the canonical
+  Svelte 5 `mount(App, { target })` API. Added a Vitest + jsdom +
+  `@testing-library/svelte` regression test (`src/main.test.ts`) that
+  exercises the bootstrap and asserts `#app` is populated; proven to fail
+  with the old API and pass with the fix. Added `src/App.test.ts` component
+  tests (heading, button, input). `npm test` green (4 tests).
+- Added project skill `regression-test-per-bugfix`: every bugfix must ship
+  with a regression test that fails without the fix and passes with it
+  (exercises the broken code path; fix reverted to prove it catches the bug).
+  Wired into `AGENTS.md` and `development.md` §7/§7.1 alongside the global
+  `always-add-unit-tests` skill.
 
 ### Changed
 
