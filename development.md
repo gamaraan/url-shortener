@@ -112,10 +112,17 @@ background goroutine inside the backend service (not a separate folder/image).
   the bucket refills enough for one request). The limiter is in-process and
   per-instance (sufficient for the single-node k0s target; documented as a
   known limitation for multi-replica Postgres mode).
-- **Shortcode generation**: random base62 nanoid, length from
-  `SHORTCODE_LENGTH` (default 7). On insert collision (unique constraint
-  violation) regenerate up to N times, then fail with 500/conflict. Supports an
-  optional per-link `expires_at` derived from `ttl_seconds` when provided.
+- **Shortcode generation**: random base62 code (crypto/rand), length from
+  `SHORTCODE_LENGTH` (default 7). **Uniqueness is guaranteed by the database**
+  via the `links.shortcode` PRIMARY KEY (a unique constraint in both Postgres
+  and SQLite). The backend **retries on a duplicate insert**: if `store.Create`
+  returns a unique-constraint violation (`*store.ConstraintError`, detected
+  via Postgres SQLSTATE `23505` or SQLite's `UNIQUE constraint failed`), the
+  API generates a fresh shortcode and retries, up to **5 attempts**. If all 5
+  attempts collide (astronomically unlikely for a 7-char base62 space), it
+  responds **409 Conflict** with `{"error":"could not generate a unique
+  shortcode"}`. Supports an optional per-link `expires_at` derived from
+  `ttl_seconds` when provided.
 - **Database selection on startup**:
   - If `DATABASE_URL` is set → **Postgres mode**. Run golang-migrate `up` with
     the SQL files embedded via `embed.FS` before the HTTP server starts; on a
@@ -510,6 +517,14 @@ the `follow-development-plan` skill) — facts only, no narrative.
       `ttl_seconds` (optional, non-negative integer) → `expires_at`; build
       `short_url` from request host; wrap `/api/*` in the rate-limiter
       middleware (429 + `Retry-After` on exceed).
+- [x] 2.5b **Duplicate-shortcode protection**: uniqueness is guaranteed by the
+      `links.shortcode` PRIMARY KEY (DB-enforced in both Postgres and SQLite).
+      `store.Create` wraps a unique-constraint violation as `*ConstraintError`
+      (Postgres SQLSTATE `23505` / SQLite `UNIQUE constraint failed`); the API
+      regenerates the shortcode and retries up to 5 attempts, then responds
+      **409 Conflict** if exhausted. API test `TestShorten_RetriesOnCollision`
+      asserts the retry-then-succeed path and `TestShorten_CollisionExhausted`
+      asserts the 409 path.
 - [x] 2.6 `cmd/server/main.go`: load config → run migrations → start HTTP
       server. The cleanup worker is started in Phase 3; Phase 2 ships the HTTP
       API without the worker. Graceful shutdown is implemented in task 2.10.

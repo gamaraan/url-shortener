@@ -9,20 +9,18 @@ import App from "./App.svelte";
 // mounted and rendered. With the old mount API this test fails (nothing is
 // rendered into the container); with the Svelte 5 `mount()` API it passes.
 describe("App", () => {
-  it("renders the heading", () => {
-    render(App);
-    expect(screen.getByText("URL Shortener")).toBeTruthy();
-  });
+	it("renders the heading", () => {
+		render(App);
+		expect(screen.getByText("URL Shortener")).toBeTruthy();
+	});
 
-  it("renders the shorten button", () => {
-    render(App);
-    expect(screen.getByRole("button", { name: /shorten/i })).toBeTruthy();
-  });
+	it("renders the shorten button", () => {
+		render(App);
+		expect(screen.getByRole("button", { name: /shorten/i })).toBeTruthy();
+	});
 
-  it("renders the URL input", () => {
-    render(App);
-    expect(
-      screen.getByPlaceholderText(/example\.com/i),
-    ).toBeTruthy();
-  });
+	it("renders the URL input", () => {
+		render(App);
+		expect(screen.getByPlaceholderText(/example\.com/i)).toBeTruthy();
+	});
 });

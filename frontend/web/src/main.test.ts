@@ -7,18 +7,18 @@ import { describe, it, expect, vi } from "vitest";
 // rendered component. With the old `new App()` API, #app stays empty and this
 // test fails; with the Svelte 5 `mount()` API it passes.
 describe("bootstrap (main.ts)", () => {
-  it("mounts the app into #app", async () => {
-    // Set up the mount target the real index.html provides.
-    document.body.innerHTML = '<div id="app"></div>';
+	it("mounts the app into #app", async () => {
+		// Set up the mount target the real index.html provides.
+		document.body.innerHTML = '<div id="app"></div>';
 
-    // The bootstrap runs mount() at import time; reset modules so a re-run
-    // re-executes it against the fresh #app.
-    vi.resetModules();
-    await import("./main");
+		// The bootstrap runs mount() at import time; reset modules so a re-run
+		// re-executes it against the fresh #app.
+		vi.resetModules();
+		await import("./main");
 
-    const app = document.getElementById("app");
-    expect(app).not.toBeNull();
-    expect(app!.textContent).toContain("URL Shortener");
-    expect(app!.querySelector("button")?.textContent).toMatch(/shorten/i);
-  });
+		const app = document.getElementById("app");
+		expect(app).not.toBeNull();
+		expect(app!.textContent).toContain("URL Shortener");
+		expect(app!.querySelector("button")?.textContent).toMatch(/shorten/i);
+	});
 });

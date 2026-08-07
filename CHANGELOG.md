@@ -101,6 +101,15 @@ All notable changes to this project are recorded here. Entries follow
   (exercises the broken code path; fix reverted to prove it catches the bug).
   Wired into `AGENTS.md` and `development.md` §7/§7.1 alongside the global
   `always-add-unit-tests` skill.
+- Duplicate-shortcode protection (made explicit in plan + covered by API tests):
+  uniqueness is guaranteed by the `links.shortcode` PRIMARY KEY
+  (DB-enforced in both Postgres and SQLite); `store.Create` wraps a
+  unique-constraint violation as `*ConstraintError` (Postgres SQLSTATE `23505` /
+  SQLite `UNIQUE constraint failed`); the API regenerates and retries up to 5
+  attempts, then returns **409 Conflict** if exhausted. Added API tests
+  `TestShorten_RetriesOnCollision` (retry-then-succeed) and
+  `TestShorten_CollisionExhausted` (409 after 5 attempts) via fake store/generator
+  (introduced `Storer`/`Generator` interfaces in `internal/api`).
 
 ### Changed
 

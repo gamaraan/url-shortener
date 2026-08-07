@@ -5,10 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gamaraan/url-shortener/backend/internal/api"
@@ -213,3 +215,87 @@ func TestShorten_RoundTrip(t *testing.T) {
 
 // keep sql referenced for future helpers (e.g. NullTime construction in tests).
 var _ = sql.NullTime{}
+
+// --- duplicate-shortcode protection (§3.1 / task 2.5b) ---
+
+// fakeStore lets a test script the Create outcome per attempt to exercise the
+// API's collision-retry loop without a real database.
+type fakeStore struct {
+	createErrs []error // one per Create call (nil = success)
+	creates    int
+}
+
+func (f *fakeStore) Create(_ context.Context, _, _ string, _ sql.NullTime) error {
+	err := f.createErrs[f.creates%len(f.createErrs)]
+	f.creates++
+	return err
+}
+
+func (f *fakeStore) Get(_ context.Context, _ string) (store.Link, error) {
+	return store.Link{}, store.ErrNotFound
+}
+
+// scriptedGen returns codes from a fixed list, cycling if exhausted.
+type scriptedGen struct {
+	codes []string
+	n     int
+}
+
+func (g *scriptedGen) Generate() string {
+	c := g.codes[g.n%len(g.codes)]
+	g.n++
+	return c
+}
+
+// TestShorten_RetriesOnCollision asserts that a unique-constraint violation
+// from the store causes the API to regenerate and retry, and that it succeeds
+// once a non-colliding code is produced.
+func TestShorten_RetriesOnCollision(t *testing.T) {
+	st := &fakeStore{createErrs: []error{
+		&store.ConstraintError{Err: errors.New("UNIQUE constraint failed: links.shortcode")},
+		&store.ConstraintError{Err: errors.New("UNIQUE constraint failed: links.shortcode")},
+		nil, // 3rd attempt succeeds
+	}}
+	gen := &scriptedGen{codes: []string{"collide1", "collide2", "winner"}}
+	srv := api.New(st, gen, nil, slog.Default())
+
+	rec := do(t, srv, http.MethodPut, "/api/shorten", `{"destination":"https://example.com"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after retry; body=%s", rec.Code, rec.Body)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body)
+	}
+	if resp["shortcode"] != "winner" {
+		t.Errorf("shortcode = %q, want 'winner' (the 3rd generated code)", resp["shortcode"])
+	}
+	if st.creates != 3 {
+		t.Errorf("Create called %d times, want 3 (2 collisions + 1 success)", st.creates)
+	}
+}
+
+// TestShorten_CollisionExhausted asserts that when every attempt collides the
+// API responds 409 Conflict rather than looping forever or returning 500.
+func TestShorten_CollisionExhausted(t *testing.T) {
+	dup := &store.ConstraintError{Err: errors.New("UNIQUE constraint failed: links.shortcode")}
+	st := &fakeStore{createErrs: []error{dup}} // always collides
+	gen := &scriptedGen{codes: []string{"c1", "c2", "c3", "c4", "c5", "c6"}}
+	srv := api.New(st, gen, nil, slog.Default())
+
+	rec := do(t, srv, http.MethodPut, "/api/shorten", `{"destination":"https://example.com"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 Conflict; body=%s", rec.Code, rec.Body)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body)
+	}
+	if !strings.Contains(errResp["error"], "unique shortcode") {
+		t.Errorf("error = %q, want a unique-shortcode message", errResp["error"])
+	}
+	// The API tries at most 5 times before giving up.
+	if st.creates != 5 {
+		t.Errorf("Create called %d times, want 5 (maxAttempts)", st.creates)
+	}
+}
