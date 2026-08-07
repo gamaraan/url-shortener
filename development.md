@@ -132,12 +132,13 @@ background goroutine inside the backend service (not a separate folder/image).
 - **Cleanup worker**: a goroutine started after the database is ready. On each
   tick it deletes links whose `created_at` is older than the retention period
   **and** links whose `expires_at` has passed. In Postgres mode it uses a
-  Postgres advisory lock (`pg_try_advisory_lock` on a constant key) so only one
-  backend replica runs cleanup per tick in a multi-replica deployment. In
-  SQLite mode the advisory lock is skipped (single-instance is already
-  mandated). Logs each run's deleted count. Ticks are bounded and the next tick
-  waits for the previous to finish (does not overlap). Logs (does not panic on)
-  per-run errors.
+  Postgres **transaction-level** advisory lock (`pg_try_advisory_xact_lock`
+  on a constant key, held across the cleanup queries and auto-released on
+  commit) so only one backend replica runs cleanup per tick in a multi-replica
+  deployment. In SQLite mode the advisory lock is skipped (single-instance is
+  already mandated). Logs each run's deleted count. Ticks are bounded and the
+  next tick waits for the previous to finish (does not overlap). Logs (does
+  not panic on) per-run errors.
 - **Duration parsing** (shared module, used by retention + cleanup frequency):
   accepts integers with unit suffixes: `300s`, `60m`, `1h`, `2d`, `1w`, `1mo`,
   `1y`. `m` = minutes, `mo` = months. On parse failure it logs the error and
@@ -483,13 +484,17 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 3 — Cleanup worker
 
-- [ ] 3.1 Implement `backend/internal/worker`: ticker on
-      `CLEANUP_FREQUENCY`; per tick, in Postgres mode acquire
-      `pg_try_advisory_lock` (skip in SQLite mode), run
+- [x] 3.1 Implement `backend/internal/worker`: ticker on
+      `CLEANUP_FREQUENCY`; per tick, in Postgres mode acquire a
+      **transaction-level** `pg_try_advisory_xact_lock` (held across the
+      cleanup queries, auto-released on commit; run via `store.WithTx`), run
       `DeleteOlderThan(now - RETENTION_PERIOD)` and `DeleteExpired()`, log
-      counts, release lock (Postgres only); non-overlapping ticks.
-- [ ] 3.2 Unit tests: lock contention (only one worker deletes) in Postgres
-      mode, retention boundary, expiry deletion, parse-fallback behavior.
+      counts; skip in SQLite mode (single-instance). Non-overlapping ticks.
+      Wired into `cmd/server/main.go` (started after DB ready, canceled on
+      shutdown).
+- [x] 3.2 Unit tests: lock contention (only one worker deletes) in Postgres
+      mode (held xact lock forces the worker to skip), retention boundary,
+      expiry deletion, parse-fallback behavior.
 
 ### Phase 4 — Frontend (Svelte SPA + Go server)
 

@@ -25,10 +25,20 @@ type Link struct {
 	ExpiresAt   sql.NullTime
 }
 
-// Store persists links. It wraps a *sql.DB and a Dialect that rewrites
-// placeholders for the underlying driver.
+// DBTX is the minimal database/exec surface the Store methods need. It is
+// satisfied by both *sql.DB and *sql.Tx, so a Store can run its queries
+// against a transaction (used by the cleanup worker's advisory-lock path).
+type DBTX interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// Store persists links. It wraps a DBTX (a *sql.DB or a *sql.Tx) and a
+// Dialect that rewrites placeholders for the underlying driver.
 type Store struct {
-	db      *sql.DB
+	core    DBTX
+	db      *sql.DB // the underlying pool (nil when this Store wraps a Tx)
 	dialect Dialect
 }
 
@@ -40,8 +50,23 @@ type Dialect struct {
 
 // New wraps an already-open *sql.DB with the given dialect.
 func New(db *sql.DB, dialect Dialect) *Store {
-	return &Store{db: db, dialect: dialect}
+	return &Store{core: db, db: db, dialect: dialect}
 }
+
+// WithTx returns a new Store that runs its queries against tx (same dialect).
+// The caller owns the transaction's lifecycle (Commit/Rollback). Used by the
+// cleanup worker to hold a Postgres transaction-level advisory lock across
+// the cleanup queries.
+func (s *Store) WithTx(tx *sql.Tx) *Store {
+	return &Store{core: tx, db: s.db, dialect: s.dialect}
+}
+
+// DB returns the underlying *sql.DB pool (used by tests and the worker to
+// begin transactions). Returns nil when this Store wraps a Tx.
+func (s *Store) DB() *sql.DB { return s.db }
+
+// Dialect returns the store's dialect (used by tests to rewrite placeholders).
+func (s *Store) Dialect() Dialect { return s.dialect }
 
 // Dialects for the two supported backends.
 var (
@@ -49,9 +74,9 @@ var (
 	DialectSQLite   = Dialect{Name: "sqlite"}
 )
 
-// rewrite converts `?` placeholders to the driver's native form. SQLite uses
+// Rewrite converts `?` placeholders to the driver's native form. SQLite uses
 // `?` directly; Postgres (pgx) uses `$1, $2, …`.
-func (d Dialect) rewrite(q string) string {
+func (d Dialect) Rewrite(q string) string {
 	if d.Name == DialectSQLite.Name {
 		return q
 	}
@@ -80,7 +105,7 @@ func (s *Store) Create(ctx context.Context, shortcode, destination string, expir
 	} else {
 		expires = nil
 	}
-	_, err := s.db.ExecContext(ctx, s.dialect.rewrite(
+	_, err := s.core.ExecContext(ctx, s.dialect.Rewrite(
 		`INSERT INTO links (shortcode, destination, created_at, expires_at) VALUES (?, ?, ?, ?)`),
 		shortcode, destination, created, expires)
 	if err != nil {
@@ -97,11 +122,11 @@ func (s *Store) Create(ctx context.Context, shortcode, destination string, expir
 // same scan path works for both Postgres and SQLite.
 func (s *Store) Get(ctx context.Context, shortcode string) (Link, error) {
 	var (
-		dest      string
-		createdS  sql.NullString
-		expiresS  sql.NullString
+		dest     string
+		createdS sql.NullString
+		expiresS sql.NullString
 	)
-	err := s.db.QueryRowContext(ctx, s.dialect.rewrite(
+	err := s.core.QueryRowContext(ctx, s.dialect.Rewrite(
 		`SELECT destination, created_at, expires_at FROM links WHERE shortcode = ?`),
 		shortcode).Scan(&dest, &createdS, &expiresS)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -134,7 +159,7 @@ func (s *Store) Get(ctx context.Context, shortcode string) (Link, error) {
 // DeleteOlderThan deletes links created before cutoff. Returns the number of
 // rows deleted.
 func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, s.dialect.rewrite(
+	res, err := s.core.ExecContext(ctx, s.dialect.Rewrite(
 		`DELETE FROM links WHERE created_at < ?`),
 		cutoff.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -150,7 +175,7 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, e
 // DeleteExpired deletes links whose expires_at has passed. Returns the number
 // of rows deleted.
 func (s *Store) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, s.dialect.rewrite(
+	res, err := s.core.ExecContext(ctx, s.dialect.Rewrite(
 		`DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at <= ?`),
 		now.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -176,7 +201,7 @@ func (s *Store) TableExists(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("store: unknown dialect %q", s.dialect.Name)
 	}
 	var got sql.NullString
-	if err := s.db.QueryRowContext(ctx, query).Scan(&got); err != nil {
+	if err := s.core.QueryRowContext(ctx, query).Scan(&got); err != nil {
 		return false, fmt.Errorf("store: table exists: %w", err)
 	}
 	return got.Valid && got.String != "", nil
@@ -186,7 +211,7 @@ func (s *Store) TableExists(ctx context.Context) (bool, error) {
 // SQL-injection guard tests).
 func (s *Store) CountLinks(ctx context.Context) (int64, error) {
 	var n int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM links`).Scan(&n); err != nil {
+	if err := s.core.QueryRowContext(ctx, `SELECT COUNT(*) FROM links`).Scan(&n); err != nil {
 		return 0, fmt.Errorf("store: count: %w", err)
 	}
 	return n, nil

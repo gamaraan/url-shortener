@@ -12,10 +12,10 @@ import (
 	"github.com/gamaraan/url-shortener/backend/internal/migrate"
 	"github.com/gamaraan/url-shortener/backend/internal/sqlite"
 	"github.com/gamaraan/url-shortener/backend/internal/store"
+	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
-	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver
 )
 
 // payloads are attacker-controlled shortcode/destination values that would

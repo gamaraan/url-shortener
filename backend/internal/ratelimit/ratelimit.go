@@ -28,8 +28,8 @@ type Limiter struct {
 }
 
 type bucket struct {
-	tokens   float64
-	last     time.Time
+	tokens float64
+	last   time.Time
 }
 
 // New builds a Limiter from a parsed RateLimit spec.

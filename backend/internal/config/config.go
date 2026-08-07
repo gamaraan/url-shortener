@@ -15,15 +15,15 @@ import (
 
 // Defaults.
 const (
-	DefaultListenAddr     = ":8080"
-	DefaultSQLitePath     = "/data/url-shortener.db"
-	DefaultRetention      = "3650d"
-	DefaultCleanupFreq    = "60m"
-	DefaultShortcodeLen   = 7
-	DefaultLogLevel       = "info"
-	DefaultRateLimit       = "100/1m"
-	DefaultPostgresPort   = "5432"
-	DefaultPostgresDB     = "urlshortener"
+	DefaultListenAddr   = ":8080"
+	DefaultSQLitePath   = "/data/url-shortener.db"
+	DefaultRetention    = "3650d"
+	DefaultCleanupFreq  = "60m"
+	DefaultShortcodeLen = 7
+	DefaultLogLevel     = "info"
+	DefaultRateLimit    = "100/1m"
+	DefaultPostgresPort = "5432"
+	DefaultPostgresDB   = "urlshortener"
 )
 
 // Config is the resolved backend configuration.

@@ -23,6 +23,7 @@ import (
 	"github.com/gamaraan/url-shortener/backend/internal/shortcode"
 	"github.com/gamaraan/url-shortener/backend/internal/sqlite"
 	"github.com/gamaraan/url-shortener/backend/internal/store"
+	"github.com/gamaraan/url-shortener/backend/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver for database/sql
 )
 
@@ -55,6 +56,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	lim := ratelimit.New(cfg.RateLimit)
 	srv := api.New(st, gen, lim, logger)
 
+	// Start the cleanup worker (retention + expiry). It ticks on
+	// CLEANUP_FREQUENCY and uses a Postgres advisory lock in Postgres mode.
+	wk := worker.New(st, db, dialect, cfg.RetentionPeriod, cfg.CleanupFreq, logger)
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	go wk.Run(workerCtx)
+	logger.Info("backend: cleanup worker started", "frequency", cfg.CleanupFreq, "retention", cfg.RetentionPeriod)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           srv.Handler(),
@@ -72,6 +80,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	<-ctx.Done()
 	logger.Info("backend: shutting down")
+	workerCancel() // stop the cleanup worker
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {

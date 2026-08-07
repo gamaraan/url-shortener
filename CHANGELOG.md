@@ -54,6 +54,13 @@ All notable changes to this project are recorded here. Entries follow
   Unit tests pass: config, shortcode, ratelimit, API handlers, and
   SQL-injection guard tests for both Postgres (testcontainers) and SQLite.
   Backend Docker image built and running on host port 8080 for manual testing.
+- Phase 3 (cleanup worker): `internal/worker` ticker on `CLEANUP_FREQUENCY`
+  that deletes over-retention and expired links; Postgres mode uses a
+  .transaction-level `pg_try_advisory_xact_lock` (held across cleanup, auto-
+  released on commit) so only one replica runs per tick; SQLite mode skips the
+  lock. Wired into `cmd/server` (started after DB ready, canceled on shutdown).
+  Unit tests pass: retention boundary, expiry deletion, parse-fallback, and
+  Postgres advisory-lock contention (held xact lock forces the worker to skip).
 
 ### Changed
 
