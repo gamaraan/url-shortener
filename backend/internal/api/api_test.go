@@ -216,6 +216,76 @@ func TestShorten_RoundTrip(t *testing.T) {
 // keep sql referenced for future helpers (e.g. NullTime construction in tests).
 var _ = sql.NullTime{}
 
+// --- access logging (§3.1) ---
+
+// captureLogger records slog records so tests can assert access-log output.
+type captureLogger struct {
+	records []map[string]any
+}
+
+// newCaptureLogger returns a *slog.Logger that records every Info/Debug/Error
+// call into the captureLogger.
+func newCaptureLogger(cl *captureLogger) *slog.Logger {
+	return slog.New(&captureHandler{cl: cl})
+}
+
+type captureHandler struct {
+	cl *captureLogger
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := map[string]any{"msg": r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		rec[a.Key] = a.Value.Any()
+		return true
+	})
+	h.cl.records = append(h.cl.records, rec)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func TestAccessLog_LogsEveryRequest(t *testing.T) {
+	st := newTestStore(t)
+	gen := shortcode.MustNew(6)
+	cl := &captureLogger{}
+	srv := api.New(st, gen, nil, newCaptureLogger(cl))
+
+	do(t, srv, http.MethodGet, "/api/health", "")
+	do(t, srv, http.MethodPut, "/api/shorten", `{"destination":"https://example.com"}`)
+	do(t, srv, http.MethodGet, "/api/resolve/nope", "")
+
+	if len(cl.records) != 3 {
+		t.Fatalf("expected 3 access-log records, got %d", len(cl.records))
+	}
+	for i, want := range []struct{ method, path string }{
+		{"GET", "/api/health"},
+		{"PUT", "/api/shorten"},
+		{"GET", "/api/resolve/nope"},
+	} {
+		got := cl.records[i]
+		if got["method"] != want.method || got["path"] != want.path {
+			t.Errorf("record %d: method=%v path=%v, want %s %s", i, got["method"], got["path"], want.method, want.path)
+		}
+		if got["status"] == nil {
+			t.Errorf("record %d: missing status", i)
+		}
+		if got["duration_ms"] == nil {
+			t.Errorf("record %d: missing duration_ms", i)
+		}
+		if got["remote_addr"] == nil {
+			t.Errorf("record %d: missing remote_addr", i)
+		}
+	}
+	// The not-found resolve must be logged with status 404.
+	if cl.records[2]["status"] != int64(http.StatusNotFound) {
+		t.Errorf("resolve not-found logged status %v, want 404", cl.records[2]["status"])
+	}
+}
+
 // --- duplicate-shortcode protection (§3.1 / task 2.5b) ---
 
 // fakeStore lets a test script the Create outcome per attempt to exercise the

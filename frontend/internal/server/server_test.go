@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -190,6 +191,79 @@ func TestShortcode_BackendDownRenders404(t *testing.T) {
 	rec := do(t, srv, http.MethodGet, "/abc")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 when backend is down", rec.Code)
+	}
+}
+
+// --- access logging (§3.2) ---
+
+// captureLogger records slog records so tests can assert access-log output.
+type captureLogger struct {
+	records []map[string]any
+}
+
+// newCaptureLogger returns a *slog.Logger that records every Info/Debug/Error
+// call into the captureLogger.
+func newCaptureLogger(cl *captureLogger) *slog.Logger {
+	return slog.New(&captureHandler{cl: cl})
+}
+
+type captureHandler struct {
+	cl *captureLogger
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := map[string]any{"msg": r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		rec[a.Key] = a.Value.Any()
+		return true
+	})
+	h.cl.records = append(h.cl.records, rec)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func TestAccessLog_LogsEveryRequest(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer backend.Close()
+
+	cl := &captureLogger{}
+	srv, err := server.New(backend.URL, newCaptureLogger(cl))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	do(t, srv, http.MethodGet, "/healthz")
+	do(t, srv, http.MethodGet, "/api/health")
+	do(t, srv, http.MethodGet, "/")
+
+	if len(cl.records) != 3 {
+		t.Fatalf("expected 3 access-log records, got %d", len(cl.records))
+	}
+	for i, want := range []struct{ method, path string }{
+		{"GET", "/healthz"},
+		{"GET", "/api/health"},
+		{"GET", "/"},
+	} {
+		got := cl.records[i]
+		if got["method"] != want.method || got["path"] != want.path {
+			t.Errorf("record %d: method=%v path=%v, want %s %s", i, got["method"], got["path"], want.method, want.path)
+		}
+		if got["status"] == nil {
+			t.Errorf("record %d: missing status", i)
+		}
+		if got["duration_ms"] == nil {
+			t.Errorf("record %d: missing duration_ms", i)
+		}
+		if got["remote_addr"] == nil {
+			t.Errorf("record %d: missing remote_addr", i)
+		}
 	}
 }
 

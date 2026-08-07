@@ -110,6 +110,37 @@ All notable changes to this project are recorded here. Entries follow
   `TestShorten_RetriesOnCollision` (retry-then-succeed) and
   `TestShorten_CollisionExhausted` (409 after 5 attempts) via fake store/generator
   (introduced `Storer`/`Generator` interfaces in `internal/api`).
+- Request logging on both frontend and backend: every HTTP request is logged
+  at INFO with `method`, `path`, `status`, `bytes`, `duration_ms`,
+  `remote_addr` (structured `slog`) via a `statusRecorder` middleware wrapping
+  the whole handler tree (so 200/400/404/409/429/502/503 are all logged). Unit
+  tests `TestAccessLog_LogsEveryRequest` in both `internal/api` and
+  `internal/server`.
+- Phase 6 (Helm chart): templates for namespace, backend and frontend
+  Deployments+Services+env, Ingress (nginx `/api/*` → backend, rest → frontend,
+  cert-manager TLS), a Postgres `Secret` + `DATABASE_URL` injection gated on
+  `postgres.enabled` (default true; replicas forced to 1 when false for SQLite
+  fallback), and an optional backend PVC for SQLite. Probes & lifecycle on both
+  Deployments: liveness + readiness on the health endpoints, `preStop: sleep 10`,
+  `terminationGracePeriodSeconds: 45`. `values.yaml` gained `shutdownTimeout`,
+  `preStopSleep`, `terminationGracePeriodSeconds`, and `rateLimits`. `helm lint`
+  passes; `helm template` renders valid YAML for both `postgres.enabled` true
+  and false. Pi-lens YAML findings on the templates are false positives (raw
+  Helm `{{- }}` directives parsed as YAML) and suppressed with
+  `# pi-lens-ignore: YAML:0`.
+- Phase 7 (GitHub Actions): two workflows under `.github/workflows/`.
+  `unit-tests.yml` runs `go vet`+`go test` (backend, frontend) and `npm ci`+
+  `npm test` (frontend/web) on push to non-`main` branches and PRs (no
+  build/deploy, concurrency-cancels in-progress runs). `build-deploy.yml` runs
+  on push to `main` (+ dispatch): a mandatory unit-test gate, then per-service
+  GHCR build+push with the `yyyy.mm.dd-xxxxxxxx` tag (from the latest commit
+  touching that folder), a Python-based `values.yaml` tag update committed back
+  to `main`, and `helm upgrade --install` into `tinyurl` using the `KUBECONFIG`
+  secret + the Postgres repository secrets via `--set`/`--set-string`. A
+  chart-only change skips builds and runs only `helm upgrade`. Both workflows
+  pass `actionlint` + `shellcheck` clean (zero errors) per the
+  `lint-github-actions` skill; zizmor security advisories (unpinned action
+  SHAs, broad token permissions) are noted as deferred hardening.
 
 ### Changed
 

@@ -1,0 +1,7 @@
+# pi-lens-ignore: YAML:0 — Helm templates are not raw YAML; they render to valid YAML (verified via helm template).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "url-shortener.namespace" . }}
+  labels:
+    {{- include "url-shortener.labels" . | nindent 4 }}

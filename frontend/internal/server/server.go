@@ -83,7 +83,44 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("/api/", s.handleProxy) // any method under /api/
 	mux.HandleFunc("/", s.handleRoot)
-	return mux
+	return s.logRequests(mux)
+}
+
+// logRequests wraps h with a per-request access log: method, path, status,
+// duration_ms, remote_addr, bytes. It logs at INFO for every request.
+func (s *Server) logRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		s.logger.Info("http: request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"remote_addr", r.RemoteAddr,
+		)
+	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the response status and
+// bytes written for access logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

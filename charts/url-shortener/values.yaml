@@ -1,7 +1,11 @@
 # url-shortener Helm chart values.
-# Scaffolding stub — populated in Phase 6 per development.md.
-# Postgres credentials are NEVER committed here; they are supplied from
-# GitHub repository secrets at deploy time (see development.md §6).
+# Populated in Phase 6 per development.md. Postgres credential VALUES are
+# NEVER committed here; they are supplied at deploy time from GitHub secrets
+# (CI) or from charts/url-shortener/.env (manual deploy, gitignored). See
+# development.md §6.
+
+# Target namespace for the app.
+namespace: tinyurl
 
 backend:
   image:
@@ -13,10 +17,16 @@ backend:
   cleanupFrequency: "60m"
   shortcodeLength: 7
   logLevel: "info"
+  rateLimits: "100/1m"
+  shutdownTimeout: "30s"
+  preStopSleep: 10
+  terminationGracePeriodSeconds: 45
   sqlitePath: "/data/url-shortener.db"
   # Optional PVC for SQLite persistence (only useful when postgres.enabled is false).
   persistence:
     enabled: false
+    size: "1Gi"
+    storageClassName: ""
 
 frontend:
   image:
@@ -25,17 +35,22 @@ frontend:
   replicas: 1
   listenAddr: ":8080"
   backendURL: "http://backend:8080"
+  logLevel: "info"
+  shutdownTimeout: "30s"
+  preStopSleep: 10
+  terminationGracePeriodSeconds: 45
 
 postgres:
   # When true, the chart creates a Secret with the credentials below and
   # injects DATABASE_URL into the backend. When false, the backend falls
   # back to a local SQLite file (single instance only).
   enabled: true
-  # Credential VALUES are supplied at deploy time from GitHub secrets via
-  # --set/--set-string; they are never committed here.
-  host: "" # POSTGRES_HOST
+  # External Postgres in the db namespace (service postgres, ClusterIP).
+  host: "postgres.db.svc.cluster.local" # POSTGRES_HOST (cross-namespace FQDN: <service>.<namespace>.svc.cluster.local)
   port: "5432" # POSTGRES_PORT
   database: "urlshortener" # POSTGRES_DB
+  # Credential VALUES are supplied at deploy time from GitHub secrets (CI) or
+  # charts/url-shortener/.env (manual); they are never committed here.
   user: "" # POSTGRES_USER
   password: "" # POSTGRES_PASSWORD
   # Optional full libpq URL; overrides the composed POSTGRES_* form.
@@ -44,7 +59,7 @@ postgres:
 ingress:
   enabled: true
   className: "nginx"
-  host: "short.example.com"
+  host: "tinyurl.gamara.ro"
   tls:
     enabled: true
     clusterIssuer: "letsencrypt-prod"

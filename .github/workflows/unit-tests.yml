@@ -1,0 +1,80 @@
+# Unit tests for feature branches and pull requests. Fast feedback only —
+# no image builds, no deploy. The mandatory build/deploy gate on main lives
+# in build-deploy.yml. See development.md §6.1.
+name: unit-tests
+
+on:
+  push:
+    branches:
+      - "**"
+      - "!main"
+  pull_request:
+    branches:
+      - main
+
+# Cancel in-progress runs on the same branch when a new push arrives.
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (go vet + go test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  frontend-go:
+    name: frontend (go vet + go test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: frontend/go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/web/package-lock.json
+      - name: build SPA (generates internal/server/dist for //go:embed)
+        working-directory: frontend/web
+        run: |
+          npm ci
+          npm run build
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  frontend-web:
+    name: frontend-web (npm test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/web/package-lock.json
+      - name: npm ci
+        run: npm ci
+      - name: npm test
+        run: npm test

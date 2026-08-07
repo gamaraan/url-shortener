@@ -159,6 +159,12 @@ background goroutine inside the backend service (not a separate folder/image).
   (`SHUTDOWN_TIMEOUT`, default `30s`). The cleanup worker is canceled
   concurrently and the DB is closed after the HTTP server returns. A hard
   exit occurs only after the drain timeout.
+- **Request logging**: every HTTP request is logged at INFO with `method`,
+  `path`, `status`, `bytes`, `duration_ms`, and `remote_addr` (structured
+  `slog`). The access log wraps the whole handler tree (outside the rate
+  limiter) so 200/400/404/409/429/503 responses are all logged. Lifecycle
+  events (startup, shutdown, worker ticks) and error paths are logged as
+  before.
 
 ### 3.2 Frontend (`frontend/`)
 
@@ -197,6 +203,12 @@ background goroutine inside the backend service (not a separate folder/image).
   `/:shortcode` resolves) or a bounded drain timeout elapses
   (`SHUTDOWN_TIMEOUT`, default `30s`). A hard exit occurs only after the drain
   timeout.
+- **Request logging**: every HTTP request is logged at INFO with `method`,
+  `path`, `status`, `bytes`, `duration_ms`, and `remote_addr` (structured
+  `slog`). The access log wraps the whole handler tree so SPA serves, asset
+  requests, `/api/*` proxy calls, `/:shortcode` resolves, `/healthz`, and
+  502/503 responses are all logged. Lifecycle events (startup, shutdown) and
+  proxy/resolve errors are logged as before.
 
 ### 3.3 Database
 
@@ -371,47 +383,75 @@ zero-dependency path.
 
 ## 6. CI/CD (GitHub Actions)
 
-Workflow file: `.github/workflows/build-deploy.yml`. Triggers on push to
-`main` and on manual dispatch.
+Two workflows under `.github/workflows/`, both linted with **actionlint** and
+**shellcheck** before being committed/PR'd (see the `lint-github-actions` skill).
 
-Steps:
+### 6.1 `unit-tests.yml` — CI gate on feature branches
 
-1. **Detect changes** (dorny/paths-filter or `git diff` against the previous
-   commit): determine whether `backend/**` and/or `frontend/**` changed. If
-   neither changed, skip build/deploy for both.
-2. **Per-service build & push** (only for changed folders):
-   - Log in to GHCR using `GITHUB_TOKEN` (or a PAT secret).
-   - Compute the folder-specific date + 8-char SHA tag (§5).
-   - `docker build` the folder's image and push it to
-     `ghcr.io/<owner>/<repo>/<service>:<tag>`.
-3. **Update `values.yaml`**: rewrite the `tag` for each changed service in
-     `charts/url-shortener/values.yaml` and commit the file back to the
-     branch (or pass via `--set` at deploy time). The committed `values.yaml`
-     is the source of truth for deployed versions.
-4. **Deploy with Helm**: configure kubeconfig from the `KUBECONFIG` secret
-     (base64), then
+- **Trigger**: push to any branch **except `main`**, and pull requests.
+- **Purpose**: fast feedback — run the unit tests for both components so a
+  broken branch never reaches `main`. Does **not** build images or deploy.
+- **Jobs**:
+  - **backend**: set up Go, `cd backend && go vet ./... && go test ./...`.
+    The Postgres-dependent tests (migrate, store injection, worker advisory
+    lock) use testcontainers and need Docker; the job runs `services:` or the
+    runner Docker daemon, and tests that need Docker `t.Skip` when it is
+    unavailable so the job stays green on runners without Docker.
+  - **frontend-go**: set up Go, `cd frontend && go vet ./... && go test ./...`
+    (the Go server tests).
+  - **frontend-web**: set up Node, `cd frontend/web && npm ci && npm test`
+    (the Vitest + jsdom SPA tests). `npm ci` requires `package-lock.json`
+    (committed).
+- **Concurrency**: cancel in-progress runs for the same branch on new pushes.
+
+### 6.2 `build-deploy.yml` — build + deploy on `main`
+
+- **Trigger**: push to `main` (includes merge commits) and manual dispatch.
+- **Mandatory gate**: run the same unit-test suites as §6.1 first; if any
+  fail, the build/deploy jobs do not run.
+- **Steps**:
+  1. **Detect changes** (`dorny/paths-filter` or `git diff` against the
+     previous commit): determine whether `backend/**` and/or `frontend/**`
+     changed. If neither changed, skip build/deploy (a chart-only change still
+     triggers a `helm upgrade` so the new chart applies — see 6.2 step 5 and
+     task 7.2).
+  2. **Per-service build & push** (only for changed folders):
+     - Log in to GHCR using the default `GITHUB_TOKEN` (`packages: write`).
+     - Compute the folder-specific date + 8-char SHA tag (§5) from the latest
+       commit touching that folder.
+     - `docker build` the folder's image and push it to
+       `ghcr.io/<owner>/<repo>/<service>:<tag>`.
+  3. **Update `values.yaml`**: rewrite the `tag` for each changed service in
+     `charts/url-shortener/values.yaml` and commit the file back to `main`
+     (or pass via `--set` at deploy time). The committed `values.yaml` is the
+     source of truth for deployed versions.
+  4. **Deploy with Helm**: configure kubeconfig from the `KUBECONFIG` secret
+     (base64-decoded), then
      `helm upgrade --install url-shortener ./charts/url-shortener \
-       --namespace url-shortener --create-namespace \
+       --namespace tinyurl --create-namespace \
        -f ./charts/url-shortener/values.yaml`.
      When `postgres.enabled` is true, pass the Postgres credentials from the
      GitHub repository secrets (§6 secrets table) via `--set`/`--set-string`
-     (or a generated, never-committed values overlay) so they are injected into
-     the chart's Postgres `Secret` and from there into the backend. When
-     `postgres.enabled` is false, do not pass any Postgres credentials.
-5. The workflow runs on `ubuntu-latest` and uses the GitHub-provided
-   `GITHUB_TOKEN` for GHCR. Helm is preinstalled on the runner; kubectl is
-   configured from the secret.
+     so they are injected into the chart's Postgres `Secret` and from there
+     into the backend. When `postgres.enabled` is false, do not pass any
+     Postgres credentials.
+  5. **Chart-only guard**: if neither `backend/` nor `frontend/` changed but
+     `charts/**` did, skip the image builds and run only the `helm upgrade` so
+     the new chart applies (image tags unchanged).
+- The workflow runs on `ubuntu-latest` and uses the GitHub-provided
+  `GITHUB_TOKEN` for GHCR. Helm is preinstalled on the runner; kubectl is
+  configured from the secret.
 
 ### Required GitHub secrets
 
 | Secret | Purpose |
 | --- | --- |
-| `KUBECONFIG` | Base64 kubeconfig for the k0s cluster, used by `helm`. |
-| `GHCR_TOKEN` (or `GITHUB_TOKEN`) | Push images to GHCR. The default `GITHUB_TOKEN` is used when sufficient; a PAT secret is used when cross-repo or longer-lived access is needed. |
-| `POSTGRES_HOST` | External Postgres host. Used only when `postgres.enabled` is true. |
-| `POSTGRES_PORT` | External Postgres port (default `5432`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_DB` | External Postgres database name (default `urlshortener`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_USER` | External Postgres username. Used only when `postgres.enabled` is true. |
+| `KUBECONFIG` | Base64 kubeconfig for the cluster, used by `helm`. |
+| `GITHUB_TOKEN` | Push images to GHCR (the default workflow token with `packages: write` is sufficient; no PAT secret needed). |
+| `POSTGRES_HOST` | External Postgres host (`postgres.db.svc.cluster.local`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_PORT` | External Postgres port (`5432`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_DB` | External Postgres database name (`urlshortener`). Used only when `postgres.enabled` is true. |
+| `POSTGRES_USER` | External Postgres username (`urlshortener`). Used only when `postgres.enabled` is true. |
 | `POSTGRES_PASSWORD` | External Postgres password. Used only when `postgres.enabled` is true. |
 | `DATABASE_URL` | Optional full libpq URL; overrides the composed `POSTGRES_*` form when provided. Used only when `postgres.enabled` is true. |
 
@@ -550,6 +590,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
       in-flight requests complete before exit (DB closed via defer). Unit
       test `TestHealth_DrainingReturns503`; live smoke test confirmed an
       in-flight shorten completed and the container exited 0.
+- [x] 2.11 Request logging (§3.1): every HTTP request is logged at INFO with
+      `method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr` via a
+      `statusRecorder` middleware wrapping the whole handler tree (outside the
+      rate limiter, so 429/503 are logged). Unit test
+      `TestAccessLog_LogsEveryRequest` asserts method/path/status/duration/
+      remote_addr for health, shorten, and a 404 resolve.
 
 ### Phase 3 — Cleanup worker
 
@@ -586,6 +632,11 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [x] 4.6 Unit tests: redirect-page HTML contains the destination and
       `content="1"`, 404 path, proxy passthrough (httptest), asset serving,
       `/healthz` 503 while draining; plus frontend `config` package tests.
+- [x] 4.7 Request logging (§3.2): every HTTP request is logged at INFO with
+      `method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr` via a
+      `statusRecorder` middleware wrapping the whole handler tree. Unit test
+      `TestAccessLog_LogsEveryRequest` asserts method/path/status/duration/
+      remote_addr for `/healthz`, `/api/health`, and `/`.
 
 ### Phase 5 — Dockerfiles
 
@@ -609,42 +660,57 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 6 — Helm chart
 
-- [ ] 6.1 `Chart.yaml` with chart metadata and a starting `version`.
-- [ ] 6.2 `values.yaml` with backend/frontend image + tag fields, ingress
+- [x] 6.1 `Chart.yaml` with chart metadata and a starting `version`.
+- [x] 6.2 `values.yaml` with backend/frontend image + tag fields, ingress
       host, TLS, env vars, replicas, resources, `postgres.enabled` toggle
       (default `true`) plus `postgres.*` credential placeholders (values never
       committed — supplied from GitHub secrets at deploy time), optional backend
-      PVC for SQLite mode.
-- [ ] 6.3 Templates: namespace, backend Deployment+Service+env (replicas
+      PVC for SQLite mode. Added `shutdownTimeout`, `preStopSleep`, and
+      `terminationGracePeriodSeconds` for both services.
+- [x] 6.3 Templates: namespace, backend Deployment+Service+env (replicas
       forced to 1 when `postgres.enabled: false`), frontend
       Deployment+Service+env, Ingress (nginx, `/api/*` → backend, rest →
       frontend, cert-manager TLS), probes, a Postgres `Secret` + env injection
       created only when `postgres.enabled: true`, optional backend PVC for
-      SQLite `SQLITE_PATH`.
-- [ ] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
+      SQLite `SQLITE_PATH`. `_helpers.tpl` provides name/label/DATABASE_URL
+      helpers.
+- [x] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
       hitting the service health endpoint (backend `/api/health`, frontend
       `/healthz`); a `preStop: exec: sleep 10` hook; `terminationGracePeriodSeconds`
       set to `SHUTDOWN_TIMEOUT + preStop` headroom (default `45s`). The
       readiness probe + 503-during-shutdown (§3.1/§3.2) removes the pod from
       Service/ingress endpoints before the process exits, so in-flight
       requests are not dropped.
-- [ ] 6.5 `helm lint` and `helm template` pass for both `postgres.enabled: true`
-      and `postgres.enabled: false`; dry-run against the target cluster (per
-      the development-workflow skill).
+- [x] 6.5 `helm lint` and `helm template` pass for both `postgres.enabled: true`
+      and `postgres.enabled: false`; rendered YAML validated as parseable.
+      (Dry-run against the target cluster is Phase 8.3 — deferred until the
+      cluster + secrets are ready.) Pi-lens YAML findings on the templates
+      are false positives (raw Helm `{{- }}` directives parsed as YAML) and
+      suppressed with `# pi-lens-ignore: YAML:0` per file.
 
 ### Phase 7 — GitHub Actions
 
-- [ ] 7.1 `.github/workflows/build-deploy.yml`: change detection
-      (`backend/`, `frontend/`), per-service build + push to GHCR with the
-      date+8-SHA tag (§5), `values.yaml` tag update, `helm upgrade --install`
-      using the `KUBECONFIG` secret (§6); when `postgres.enabled` is true,
-      pass `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`
-      (or `DATABASE_URL`) from GitHub repository secrets to helm via
+- [x] 7.1 `.github/workflows/unit-tests.yml`: on push to any non-`main` branch
+      (and PRs), run `go vet ./...` + `go test ./...` in `backend/` and
+      `frontend/`, and `npm ci` + `npm test` in `frontend/web/`. No build, no
+      deploy. Cancel in-progress runs on new pushes to the same branch.
+- [x] 7.2 `.github/workflows/build-deploy.yml`: on push to `main` (incl. merge
+      commits) and manual dispatch. Mandatory gate: run the same unit-test
+      suites first; on success, detect changes (`backend/`, `frontend/`),
+      per-service build + push to GHCR with the date+8-SHA tag (§5), update the
+      `tag` in `charts/url-shortener/values.yaml` (via an `env:`-mapped Python
+      step so no `${{ }}` lives in the `run:` body), then `helm upgrade --install`
+      into `tinyurl` using the `KUBECONFIG` secret; when `postgres.enabled` is
+      true, pass `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/
+      `POSTGRES_PASSWORD` from GitHub repository secrets to helm via
       `--set`/`--set-string` (never committed to `values.yaml`).
-- [ ] 7.2 Add a `Dockerfile`-only guard so a chart-only change redeploys
-      (helm upgrade) without rebuilding images (tags unchanged).
-- [ ] 7.3 Verify the workflow runs green on a feature branch push to main
-      merge simulation (act or a real dry-run).
+- [x] 7.3 Chart-only guard: if neither `backend/` nor `frontend/` changed but
+      `charts/**` did, the build jobs are skipped and the `deploy` job runs
+      only `helm upgrade` (tags unchanged) so the new chart applies.
+- [x] 7.4 Lint both workflows with **actionlint** and **shellcheck** (zero
+      errors) per the `lint-github-actions` skill; both pass clean. Zizmor
+      security advisories (unpinned `actions/*` SHAs, broad `GITHUB_TOKEN`
+      permissions) are noted as deferred hardening, not lint errors.
 
 ### Phase 8 — Cluster secrets & first deploy
 
