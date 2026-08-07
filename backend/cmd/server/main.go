@@ -79,13 +79,26 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}()
 
 	<-ctx.Done()
-	logger.Info("backend: shutting down")
-	workerCancel() // stop the cleanup worker
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	logger.Info("backend: shutting down", "shutdown_timeout", cfg.ShutdownTimeout)
+
+	// 1. Flip draining so /api/health returns 503 and the kubelet/ingress stop
+	//    routing new traffic to this pod.
+	srv.SetDraining(true)
+
+	// 2. Stop the cleanup worker concurrently (it may be mid-sweep; the worker's
+	//    transaction will be rolled back on context cancellation).
+	workerCancel()
+
+	// 3. Stop accepting new connections/requests and wait for in-flight ones to
+	//    complete, bounded by SHUTDOWN_TIMEOUT. http.Server.Shutdown closes the
+	//    listener and waits for active connections; it does not interrupt the
+	//    /api/health 503s above.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("http shutdown: %w", err)
+		logger.Error("backend: http shutdown did not complete within timeout", "error", err, "timeout", cfg.ShutdownTimeout)
 	}
+	logger.Info("backend: http server stopped")
 	return nil
 }
 

@@ -15,15 +15,16 @@ import (
 
 // Defaults.
 const (
-	DefaultListenAddr   = ":8080"
-	DefaultSQLitePath   = "/data/url-shortener.db"
-	DefaultRetention    = "3650d"
-	DefaultCleanupFreq  = "60m"
-	DefaultShortcodeLen = 7
-	DefaultLogLevel     = "info"
-	DefaultRateLimit    = "100/1m"
-	DefaultPostgresPort = "5432"
-	DefaultPostgresDB   = "urlshortener"
+	DefaultListenAddr       = ":8080"
+	DefaultSQLitePath       = "/data/url-shortener.db"
+	DefaultRetention        = "3650d"
+	DefaultCleanupFreq      = "60m"
+	DefaultShortcodeLen     = 7
+	DefaultLogLevel         = "info"
+	DefaultRateLimit        = "100/1m"
+	DefaultPostgresPort     = "5432"
+	DefaultPostgresDB       = "urlshortener"
+	DefaultShutdownTimeout = "30s"
 )
 
 // Config is the resolved backend configuration.
@@ -36,6 +37,7 @@ type Config struct {
 	ShortcodeLength int
 	LogLevel        slog.Level
 	RateLimit       RateLimit
+	ShutdownTimeout time.Duration
 }
 
 // RateLimit is a parsed "<count>/<window>" rate-limit spec.
@@ -53,9 +55,10 @@ func Load(logger *slog.Logger) Config {
 		ListenAddr:      envOr("LISTEN_ADDR", DefaultListenAddr),
 		RetentionPeriod: parseDurationOr(logger, "RETENTION_PERIOD", envOr("RETENTION_PERIOD", DefaultRetention), DefaultRetention),
 		CleanupFreq:     parseDurationOr(logger, "CLEANUP_FREQUENCY", envOr("CLEANUP_FREQUENCY", DefaultCleanupFreq), DefaultCleanupFreq),
-		ShortcodeLength: parseIntOr(envOr("SHORTCODE_LENGTH", strconv.Itoa(DefaultShortcodeLen)), DefaultShortcodeLen),
-		LogLevel:        parseLogLevel(envOr("LOG_LEVEL", DefaultLogLevel)),
-		RateLimit:       parseRateLimitOr(logger, envOr("RATE_LIMITS", DefaultRateLimit)),
+		ShortcodeLength:  parseIntOr(envOr("SHORTCODE_LENGTH", strconv.Itoa(DefaultShortcodeLen)), DefaultShortcodeLen),
+		LogLevel:         parseLogLevel(envOr("LOG_LEVEL", DefaultLogLevel)),
+		RateLimit:        parseRateLimitOr(logger, envOr("RATE_LIMITS", DefaultRateLimit)),
+		ShutdownTimeout:  parseDurationOr(logger, "SHUTDOWN_TIMEOUT", envOr("SHUTDOWN_TIMEOUT", DefaultShutdownTimeout), DefaultShutdownTimeout),
 	}
 	if c.DatabaseURL == "" {
 		c.DatabaseURL = composePostgresURL()

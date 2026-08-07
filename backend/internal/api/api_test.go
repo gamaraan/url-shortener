@@ -165,6 +165,29 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestHealth_DrainingReturns503(t *testing.T) {
+	srv := newServer(t)
+	srv.SetDraining(true)
+	rec := do(t, srv, http.MethodGet, "/api/health", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 while draining; body=%s", rec.Code, rec.Body)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body)
+	}
+	if resp["status"] != "draining" {
+		t.Errorf("status = %q, want draining", resp["status"])
+	}
+
+	// Toggling back off restores 200.
+	srv.SetDraining(false)
+	rec2 := do(t, srv, http.MethodGet, "/api/health", "")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after clearing drain", rec2.Code)
+	}
+}
+
 func TestShorten_RoundTrip(t *testing.T) {
 	srv := newServer(t)
 	rec := do(t, srv, http.MethodPut, "/api/shorten",

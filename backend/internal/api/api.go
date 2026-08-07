@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gamaraan/url-shortener/backend/internal/ratelimit"
@@ -26,12 +27,29 @@ type Server struct {
 	generator *shortcode.Generator
 	limiter   *ratelimit.Limiter
 	logger    *slog.Logger
+
+	// draining is set to 1 during graceful shutdown so /api/health returns 503
+	// and the kubelet/ingress stop sending traffic before the process exits.
+	draining atomic.Bool
 }
 
 // New builds a Server. The limiter may be nil to disable rate limiting (tests).
 func New(st *store.Store, gen *shortcode.Generator, lim *ratelimit.Limiter, logger *slog.Logger) *Server {
 	return &Server{store: st, generator: gen, limiter: lim, logger: logger}
 }
+
+// SetDraining marks the server as draining. Subsequent /api/health requests
+// return 503; in-flight requests are allowed to complete. It is idempotent.
+func (s *Server) SetDraining(draining bool) {
+	if draining {
+		s.draining.Store(true)
+	} else {
+		s.draining.Store(false)
+	}
+}
+
+// IsDraining reports whether the server is in drain mode.
+func (s *Server) IsDraining() bool { return s.draining.Load() }
 
 // Handler returns an http.Handler for the API, with rate-limiting applied to
 // /api/* when a limiter is configured.
@@ -135,6 +153,12 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if s.IsDraining() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "draining"})
+		return
+	}
 	respond(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
