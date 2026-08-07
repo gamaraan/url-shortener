@@ -63,7 +63,8 @@ func (s *Server) SetDraining(draining bool) {
 func (s *Server) IsDraining() bool { return s.draining.Load() }
 
 // Handler returns an http.Handler for the API, with rate-limiting applied to
-// /api/* when a limiter is configured.
+// /api/* when a limiter is configured, and per-request access logging wrapped
+// around everything (so 429s and 503s are logged too).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/shorten", s.handleShorten)
@@ -74,7 +75,44 @@ func (s *Server) Handler() http.Handler {
 	if s.limiter != nil {
 		h = s.limiter.Middleware(h)
 	}
-	return h
+	return s.logRequests(h)
+}
+
+// logRequests wraps h with a per-request access log: method, path, status,
+// duration_ms, remote_addr, bytes. It logs at INFO for every request.
+func (s *Server) logRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		s.logger.Info("http: request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"remote_addr", r.RemoteAddr,
+		)
+	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the response status and
+// bytes written for access logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
 }
 
 // shortenRequest is the PUT /api/shorten body.

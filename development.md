@@ -159,6 +159,12 @@ background goroutine inside the backend service (not a separate folder/image).
   (`SHUTDOWN_TIMEOUT`, default `30s`). The cleanup worker is canceled
   concurrently and the DB is closed after the HTTP server returns. A hard
   exit occurs only after the drain timeout.
+- **Request logging**: every HTTP request is logged at INFO with `method`,
+  `path`, `status`, `bytes`, `duration_ms`, and `remote_addr` (structured
+  `slog`). The access log wraps the whole handler tree (outside the rate
+  limiter) so 200/400/404/409/429/503 responses are all logged. Lifecycle
+  events (startup, shutdown, worker ticks) and error paths are logged as
+  before.
 
 ### 3.2 Frontend (`frontend/`)
 
@@ -197,6 +203,12 @@ background goroutine inside the backend service (not a separate folder/image).
   `/:shortcode` resolves) or a bounded drain timeout elapses
   (`SHUTDOWN_TIMEOUT`, default `30s`). A hard exit occurs only after the drain
   timeout.
+- **Request logging**: every HTTP request is logged at INFO with `method`,
+  `path`, `status`, `bytes`, `duration_ms`, and `remote_addr` (structured
+  `slog`). The access log wraps the whole handler tree so SPA serves, asset
+  requests, `/api/*` proxy calls, `/:shortcode` resolves, `/healthz`, and
+  502/503 responses are all logged. Lifecycle events (startup, shutdown) and
+  proxy/resolve errors are logged as before.
 
 ### 3.3 Database
 
@@ -550,6 +562,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
       in-flight requests complete before exit (DB closed via defer). Unit
       test `TestHealth_DrainingReturns503`; live smoke test confirmed an
       in-flight shorten completed and the container exited 0.
+- [x] 2.11 Request logging (§3.1): every HTTP request is logged at INFO with
+      `method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr` via a
+      `statusRecorder` middleware wrapping the whole handler tree (outside the
+      rate limiter, so 429/503 are logged). Unit test
+      `TestAccessLog_LogsEveryRequest` asserts method/path/status/duration/
+      remote_addr for health, shorten, and a 404 resolve.
 
 ### Phase 3 — Cleanup worker
 
@@ -586,6 +604,11 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [x] 4.6 Unit tests: redirect-page HTML contains the destination and
       `content="1"`, 404 path, proxy passthrough (httptest), asset serving,
       `/healthz` 503 while draining; plus frontend `config` package tests.
+- [x] 4.7 Request logging (§3.2): every HTTP request is logged at INFO with
+      `method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr` via a
+      `statusRecorder` middleware wrapping the whole handler tree. Unit test
+      `TestAccessLog_LogsEveryRequest` asserts method/path/status/duration/
+      remote_addr for `/healthz`, `/api/health`, and `/`.
 
 ### Phase 5 — Dockerfiles
 

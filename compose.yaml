@@ -39,7 +39,7 @@ services:
       # Postgres mode (default stack): DATABASE_URL wired from the postgres service.
       DATABASE_URL: "postgres://urlshortener:urlshortener@postgres:5432/urlshortener?sslmode=disable"
       RETENTION_PERIOD: "3650d"
-      CLEANUP_FREQUENCY: "2m"
+      CLEANUP_FREQUENCY: "10m"
       SHUTDOWN_TIMEOUT: "30s"
     ports:
       - "8080:8080"

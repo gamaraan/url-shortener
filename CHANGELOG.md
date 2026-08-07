@@ -110,6 +110,12 @@ All notable changes to this project are recorded here. Entries follow
   `TestShorten_RetriesOnCollision` (retry-then-succeed) and
   `TestShorten_CollisionExhausted` (409 after 5 attempts) via fake store/generator
   (introduced `Storer`/`Generator` interfaces in `internal/api`).
+- Request logging on both frontend and backend: every HTTP request is logged
+  at INFO with `method`, `path`, `status`, `bytes`, `duration_ms`,
+  `remote_addr` (structured `slog`) via a `statusRecorder` middleware wrapping
+  the whole handler tree (so 200/400/404/409/429/502/503 are all logged). Unit
+  tests `TestAccessLog_LogsEveryRequest` in both `internal/api` and
+  `internal/server`.
 
 ### Changed
 
