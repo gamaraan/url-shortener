@@ -23,6 +23,10 @@ All notable changes to this project are recorded here. Entries follow
 - Wired the global `always-add-unit-tests` skill into the project: every new
   feature and bugfix must ship with unit tests, and no `development.md` task is
   `done` until `go test ./...` passes in `backend/` and `frontend/`.
+- Local testing via Docker Compose: a `compose.yaml` at the repo root runs the
+  full stack locally. Default profile uses the SQLite fallback (no Postgres
+  needed); a `postgres` profile adds a `postgres:16` service for testing
+  Postgres mode + migrations. Local testing only — production deploys via Helm.
 
 ### Changed
 

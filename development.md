@@ -65,6 +65,9 @@ background goroutine inside the backend service (not a separate folder/image).
 │   ├── embed.go             # //go:embed dist
 │   ├── Dockerfile            # multi-stage: node build → go embed → final
 │   └── *_test.go
+├── compose.yaml              # local Docker Compose stack for testing
+├── compose/                  # compose overrides + seed data
+│   └── README.md
 └── charts/url-shortener/    # Helm chart
     ├── Chart.yaml
     ├── values.yaml          # committed; image tags updated by CI
@@ -214,6 +217,37 @@ Frontend:
 Duration strings use the shared parser (§3.1). Invalid values log an error and
 fall back to the default.
 
+### 3.5 Local testing (Docker Compose)
+
+A `compose.yaml` at the repo root runs the full stack locally for manual and
+integration testing. The SQLite fallback makes this possible with **zero
+external dependencies** — no Postgres required for the default profile.
+
+- **Default profile (SQLite)**: `docker compose up` starts `frontend` and
+  `backend` only. `backend` runs with `DATABASE_URL` unset → SQLite fallback,
+  `SQLITE_PATH` pointed at a named volume (`/data/url-shortener.db`) so the
+  database survives `docker compose down` (but not `docker compose down -v`).
+  `backend.replicas` is effectively 1 (single backend container). The backend
+  logs the SQLite WARN on startup (§3.1).
+- **Postgres profile**: `docker compose --profile postgres up` additionally
+  starts a `postgres` service (image `postgres:16`) with a named volume, and
+  sets `DATABASE_URL` for the backend → Postgres mode with migrations. This is
+  the integration path for testing migrations and the advisory-lock cleanup.
+- Services:
+  - `frontend` — builds `frontend/Dockerfile`, exposes `:8080` on host port
+    `8081` (or as configured).
+  - `backend` — builds `backend/Dockerfile`, exposes `:8080` on host port
+    `8080`.
+  - `postgres` (profile `postgres`) — exposes `:5432` on host port `5432`.
+- `frontend.BACKEND_URL` points at `http://backend:8080` (in-compose DNS).
+- A `compose/README.md` documents both profiles, the exposed ports, the
+  volumes, and how to reset data (`docker compose down -v`).
+- Both `backend` and `frontend` services use `build:` pointing at their
+  respective `Dockerfile` (Phase 5), so `docker compose up --build` exercises
+  the real production images locally.
+- The compose stack is for **local testing only**; it is never used for
+  production (production deploys via the Helm chart, §4/§6).
+
 ## 4. Helm chart (`charts/url-shortener/`)
 
 - Targets a **k0s single-node cluster with nginx ingress** and
@@ -350,12 +384,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 0 — Scaffolding
 
-- [ ] 0.1 Create the `backend/`, `frontend/`, and `charts/url-shortener/`
+- [x] 0.1 Create the `backend/`, `frontend/`, and `charts/url-shortener/`
       directories with `go.mod`/`package.json` stubs and an initial module
       path.
-- [ ] 0.2 Create `.gitignore` (Go binaries, `frontend/web/node_modules`,
+- [x] 0.2 Create `.gitignore` (Go binaries, `frontend/web/node_modules`,
       `frontend/web/dist`, `dist/`).
-- [ ] 0.3 Set up git identity per the `git-identity` skill
+- [x] 0.3 Set up git identity per the `git-identity` skill
       (`gamaraan` / `gabi.hulea@gmail.com`).
 
 ### Phase 1 — Database & migrations
@@ -439,6 +473,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [ ] 5.3 Verify both images build locally and the backend starts against a
       local Postgres and, with `DATABASE_URL` unset, against a local SQLite
       file (and logs the fallback WARN).
+- [ ] 5.4 `compose.yaml` + `compose/README.md` (§3.5): default SQLite profile
+      (frontend + backend, `SQLITE_PATH` on a named volume) and a `postgres`
+      profile (adds a `postgres:16` service + `DATABASE_URL` for the backend).
+      `docker compose up --build` and `docker compose --profile postgres up
+      --build` both reach a healthy `/api/health` and the frontend UI; verify
+      data survives `docker compose down` but not `docker compose down -v`.
 
 ### Phase 6 — Helm chart
 

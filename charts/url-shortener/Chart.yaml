@@ -1,0 +1,8 @@
+apiVersion: v2
+name: url-shortener
+description: URL shortener — backend (Go) + frontend (Go+embedded Svelte) with external Postgres or SQLite fallback.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: gamaraan
