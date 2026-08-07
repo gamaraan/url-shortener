@@ -26,12 +26,12 @@ var distFS embed.FS
 
 // Server is the frontend HTTP server.
 type Server struct {
-	backendURL  *url.URL
-	proxy       *httputil.ReverseProxy
-	logger      *slog.Logger
-	draining    atomic.Bool
-	assets      fs.FS
-	indexHTML   []byte
+	backendURL *url.URL
+	proxy      *httputil.ReverseProxy
+	logger     *slog.Logger
+	draining   atomic.Bool
+	assets     fs.FS
+	indexHTML  []byte
 }
 
 // New builds a Server. backendURL is the in-cluster backend base URL
@@ -62,10 +62,10 @@ func New(backendURL string, logger *slog.Logger) (*Server, error) {
 
 	return &Server{
 		backendURL: u,
-		proxy:     proxy,
-		logger:    logger,
-		assets:    assets,
-		indexHTML: idx,
+		proxy:      proxy,
+		logger:     logger,
+		assets:     assets,
+		indexHTML:  idx,
 	}, nil
 }
 

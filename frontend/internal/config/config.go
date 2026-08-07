@@ -112,7 +112,7 @@ func ParseDuration(s string) (time.Duration, error) {
 }
 
 type durationError struct {
-	raw   string
+	raw    string
 	reason string
 }
 
