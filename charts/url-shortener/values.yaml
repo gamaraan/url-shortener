@@ -1,7 +1,11 @@
 # url-shortener Helm chart values.
-# Scaffolding stub — populated in Phase 6 per development.md.
-# Postgres credentials are NEVER committed here; they are supplied from
-# GitHub repository secrets at deploy time (see development.md §6).
+# Populated in Phase 6 per development.md. Postgres credential VALUES are
+# NEVER committed here; they are supplied at deploy time from GitHub secrets
+# (CI) or from charts/url-shortener/.env (manual deploy, gitignored). See
+# development.md §6.
+
+# Target namespace for the app.
+namespace: tinyurl
 
 backend:
   image:
@@ -41,11 +45,12 @@ postgres:
   # injects DATABASE_URL into the backend. When false, the backend falls
   # back to a local SQLite file (single instance only).
   enabled: true
-  # Credential VALUES are supplied at deploy time from GitHub secrets via
-  # --set/--set-string; they are never committed here.
-  host: "" # POSTGRES_HOST
+  # External Postgres in the db namespace (service postgres, ClusterIP).
+  host: "postgres.db" # POSTGRES_HOST
   port: "5432" # POSTGRES_PORT
   database: "urlshortener" # POSTGRES_DB
+  # Credential VALUES are supplied at deploy time from GitHub secrets (CI) or
+  # charts/url-shortener/.env (manual); they are never committed here.
   user: "" # POSTGRES_USER
   password: "" # POSTGRES_PASSWORD
   # Optional full libpq URL; overrides the composed POSTGRES_* form.

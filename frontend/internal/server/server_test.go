@@ -224,7 +224,7 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(_ string) slog.Handler       { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestAccessLog_LogsEveryRequest(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

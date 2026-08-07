@@ -246,7 +246,7 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(_ string) slog.Handler       { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestAccessLog_LogsEveryRequest(t *testing.T) {
 	st := newTestStore(t)
