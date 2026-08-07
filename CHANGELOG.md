@@ -128,6 +128,10 @@ All notable changes to this project are recorded here. Entries follow
   and false. Pi-lens YAML findings on the templates are false positives (raw
   Helm `{{- }}` directives parsed as YAML) and suppressed with
   `# pi-lens-ignore: YAML:0`.
+- Fixed: Helm deploy failed with "namespaces 'tinyurl' already exists" — the
+  chart's `namespace.yaml` template conflicted with `helm --create-namespace`.
+  Removed the `Namespace` template; the namespace is created by
+  `--create-namespace` and all resources use `namespace: {{ .Release.Namespace }}`.
 - Phase 7 (GitHub Actions): two workflows under `.github/workflows/`.
   `unit-tests.yml` runs `go vet`+`go test` (backend, frontend) and `npm ci`+
   `npm test` (frontend/web) on push to non-`main` branches and PRs (no

@@ -4,7 +4,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "url-shortener.name" . }}
-  namespace: {{ include "url-shortener.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "url-shortener.labels" . | nindent 4 }}
   {{- if .Values.ingress.tls.enabled }}
