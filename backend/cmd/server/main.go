@@ -1,20 +1,30 @@
 // Command server is the URL-shortener backend entrypoint.
 //
-// Phase 1: database selection + schema bootstrap only. The HTTP server, store,
-// shortcode, and cleanup worker are added in Phases 2-3 per development.md.
+// Phase 2: config → database selection → store → HTTP API server with graceful
+// shutdown. The cleanup worker is added in Phase 3. See development.md.
 package main
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/gamaraan/url-shortener/backend/internal/api"
+	"github.com/gamaraan/url-shortener/backend/internal/config"
 	"github.com/gamaraan/url-shortener/backend/internal/migrate"
+	"github.com/gamaraan/url-shortener/backend/internal/ratelimit"
+	"github.com/gamaraan/url-shortener/backend/internal/shortcode"
 	"github.com/gamaraan/url-shortener/backend/internal/sqlite"
+	"github.com/gamaraan/url-shortener/backend/internal/store"
+	"github.com/gamaraan/url-shortener/backend/internal/worker"
+	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver for database/sql
 )
 
 func main() {
@@ -33,36 +43,92 @@ func main() {
 }
 
 func run(ctx context.Context, logger *slog.Logger) error {
-	dbURL := os.Getenv("DATABASE_URL")
-	sqlitePath := os.Getenv("SQLITE_PATH")
-	if sqlitePath == "" {
-		sqlitePath = "/data/url-shortener.db"
+	cfg := config.Load(logger)
+
+	db, dialect, err := openDB(ctx, cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	st := store.New(db, dialect)
+	gen := shortcode.MustNew(cfg.ShortcodeLength)
+	lim := ratelimit.New(cfg.RateLimit)
+	srv := api.New(st, gen, lim, logger)
+
+	// Start the cleanup worker (retention + expiry). It ticks on
+	// CLEANUP_FREQUENCY and uses a Postgres advisory lock in Postgres mode.
+	wk := worker.New(st, db, dialect, cfg.RetentionPeriod, cfg.CleanupFreq, logger)
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	go wk.Run(workerCtx)
+	logger.Info("backend: cleanup worker started", "frequency", cfg.CleanupFreq, "retention", cfg.RetentionPeriod)
+
+	httpSrv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	var db *sql.DB
-	if dbURL != "" {
-		logger.Info("database: Postgres mode", "database_url_set", true)
-		if err := migrate.Run(ctx, dbURL); err != nil {
-			return fmt.Errorf("postgres migrations: %w", err)
+	// Start serving.
+	go func() {
+		logger.Info("backend: HTTP server listening", "addr", cfg.ListenAddr)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("backend: listen failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("backend: shutting down", "shutdown_timeout", cfg.ShutdownTimeout)
+
+	// 1. Flip draining so /api/health returns 503 and the kubelet/ingress stop
+	//    routing new traffic to this pod.
+	srv.SetDraining(true)
+
+	// 2. Stop the cleanup worker concurrently (it may be mid-sweep; the worker's
+	//    transaction will be rolled back on context cancellation).
+	workerCancel()
+
+	// 3. Stop accepting new connections/requests and wait for in-flight ones to
+	//    complete, bounded by SHUTDOWN_TIMEOUT. http.Server.Shutdown closes the
+	//    listener and waits for active connections; it does not interrupt the
+	//    /api/health 503s above.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("backend: http shutdown did not complete within timeout", "error", err, "timeout", cfg.ShutdownTimeout)
+	}
+	logger.Info("backend: http server stopped")
+	return nil
+}
+
+// openDB selects Postgres or SQLite based on config, runs migrations or
+// bootstraps the schema, and returns an open *sql.DB plus the store dialect.
+func openDB(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sql.DB, store.Dialect, error) {
+	if cfg.DatabaseURL != "" {
+		logger.Info("database: Postgres mode")
+		if err := migrate.Run(ctx, cfg.DatabaseURL); err != nil {
+			return nil, store.Dialect{}, fmt.Errorf("postgres migrations: %w", err)
+		}
+		db, err := sql.Open("pgx", cfg.DatabaseURL)
+		if err != nil {
+			return nil, store.Dialect{}, fmt.Errorf("postgres open: %w", err)
+		}
+		if err := db.PingContext(ctx); err != nil {
+			return nil, store.Dialect{}, fmt.Errorf("postgres ping: %w", err)
 		}
 		logger.Info("database: migrations applied")
-		// The HTTP server (Phase 2.5) will open its own pgx pool; here we only
-		// verify connectivity. Migrations already succeeded above.
-	} else {
-		logger.Warn("database: no DATABASE_URL configured — using temporary SQLite storage; data will be lost on restart; do not start more than one backend instance",
-			"sqlite_path", sqlitePath)
-		var err error
-		db, err = sqlite.Bootstrap(ctx, sqlitePath)
-		if err != nil {
-			return fmt.Errorf("sqlite bootstrap: %w", err)
-		}
-		defer db.Close()
-		logger.Info("database: SQLite schema created")
+		return db, store.DialectPostgres, nil
 	}
 
-	// Phase 2.5 wires the HTTP server here. For now, exit cleanly after DB init.
-	logger.Info("backend: database ready (HTTP server not implemented yet)")
-	return nil
+	logger.Warn("database: no DATABASE_URL configured — using temporary SQLite storage; data will be lost on restart; do not start more than one backend instance",
+		"sqlite_path", cfg.SQLitePath)
+	db, err := sqlite.Bootstrap(ctx, cfg.SQLitePath)
+	if err != nil {
+		return nil, store.Dialect{}, fmt.Errorf("sqlite bootstrap: %w", err)
+	}
+	logger.Info("database: SQLite schema created")
+	return db, store.DialectSQLite, nil
 }
 
 func parseLogLevel(s string) slog.Level {

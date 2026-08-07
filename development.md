@@ -84,8 +84,16 @@ background goroutine inside the backend service (not a separate folder/image).
   - `PUT /api/shorten` — body `{"destination":"…","ttl_seconds":<int, optional>}`.
     Returns `{"short_url":"https://<host>/<shortcode>","shortcode":"…","destination":"…"}`.
     `host` is taken from the `X-Forwarded-Host` / `Host` request header so the
-    returned short URL is correct behind the ingress. Validates the destination
-    is an absolute URL with scheme `http`/`https`.
+    returned short URL is correct behind the ingress. **Input sanity check**:
+    before any storage work, the backend validates that `destination` is
+    present, non-empty, and a valid absolute URL with scheme `http` or `https`
+    and a non-empty host (parsed via `net/url`). If the payload is missing,
+    not valid JSON, or the URL is invalid, it responds **400 Bad Request** with
+    JSON `{"error":"<reason>"}` (e.g. `destination is required`,
+    `destination must be an absolute http(s) URL`, `invalid request body`).
+    The frontend renders this `error` field verbatim so the user sees the
+    exact reason. `ttl_seconds`, when present, must be a non-negative integer;
+    a negative or non-integer value is a 400 with a relevant message.
   - `GET /api/resolve/:shortcode` — returns
     `{"shortcode":"…","destination":"…"}` with HTTP 200, or 404 (JSON error)
     when not found / expired. Does **not** record the hit here; the hit counter
@@ -124,16 +132,25 @@ background goroutine inside the backend service (not a separate folder/image).
 - **Cleanup worker**: a goroutine started after the database is ready. On each
   tick it deletes links whose `created_at` is older than the retention period
   **and** links whose `expires_at` has passed. In Postgres mode it uses a
-  Postgres advisory lock (`pg_try_advisory_lock` on a constant key) so only one
-  backend replica runs cleanup per tick in a multi-replica deployment. In
-  SQLite mode the advisory lock is skipped (single-instance is already
-  mandated). Logs each run's deleted count. Ticks are bounded and the next tick
-  waits for the previous to finish (does not overlap). Logs (does not panic on)
-  per-run errors.
+  Postgres **transaction-level** advisory lock (`pg_try_advisory_xact_lock`
+  on a constant key, held across the cleanup queries and auto-released on
+  commit) so only one backend replica runs cleanup per tick in a multi-replica
+  deployment. In SQLite mode the advisory lock is skipped (single-instance is
+  already mandated). Logs each run's deleted count. Ticks are bounded and the
+  next tick waits for the previous to finish (does not overlap). Logs (does
+  not panic on) per-run errors.
 - **Duration parsing** (shared module, used by retention + cleanup frequency):
   accepts integers with unit suffixes: `300s`, `60m`, `1h`, `2d`, `1w`, `1mo`,
   `1y`. `m` = minutes, `mo` = months. On parse failure it logs the error and
   falls back to the documented default for that variable.
+- **Graceful shutdown**: on SIGINT/SIGTERM the server **stops accepting new
+  connections/requests**, the `/api/health` endpoint starts returning **503
+  Service Unavailable** (so kubelet/ingress stop sending traffic — see §4
+  readiness probe), and the process **does not exit until all in-flight
+  requests have completed** or a bounded drain timeout elapses
+  (`SHUTDOWN_TIMEOUT`, default `30s`). The cleanup worker is canceled
+  concurrently and the DB is closed after the HTTP server returns. A hard
+  exit occurs only after the drain timeout.
 
 ### 3.2 Frontend (`frontend/`)
 
@@ -164,6 +181,14 @@ background goroutine inside the backend service (not a separate folder/image).
 - **UI**: single page with a heading, a text input for the URL, a "Shorten"
   button, and a results area showing the generated short URL with a copy
   button. Responsive, minimal. No auth.
+- **Graceful shutdown**: on SIGINT/SIGTERM the server **stops accepting new
+  connections/requests**, the `/healthz` endpoint starts returning **503
+  Service Unavailable** (so kubelet/ingress stop sending traffic — see §4
+  readiness probe), and the process **does not exit until all in-flight
+  requests have completed** (including proxied `/api/*` calls and in-progress
+  `/:shortcode` resolves) or a bounded drain timeout elapses
+  (`SHUTDOWN_TIMEOUT`, default `30s`). A hard exit occurs only after the drain
+  timeout.
 
 ### 3.3 Database
 
@@ -218,6 +243,7 @@ Backend:
 | `CLEANUP_FREQUENCY` | `60m` | Cleanup worker tick interval. Duration string. |
 | `SHORTCODE_LENGTH` | `7` | nanoid length. |
 | `RATE_LIMITS` | `100/1m` | Per-client-IP rate limit as `"<count>/<window>"` (e.g. `"100/1m"`, `"30/10s"`). Window uses the duration parser; parse failure logs an error and falls back to `100/1m`. |
+| `SHUTDOWN_TIMEOUT` | `30s` | Graceful drain deadline after SIGTERM: stop accepting new requests, return 503 on `/api/health`, and exit only after in-flight requests finish or this timeout. Duration string. |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`. |
 
 Frontend:
@@ -226,6 +252,7 @@ Frontend:
 | --- | --- | --- |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address. |
 | `BACKEND_URL` | `http://backend:8080` | Backend base URL for the reverse proxy. |
+| `SHUTDOWN_TIMEOUT` | `30s` | Graceful drain deadline after SIGTERM: stop accepting new requests, return 503 on `/healthz`, and exit only after in-flight requests finish or this timeout. Duration string. |
 
 Duration strings use the shared parser (§3.1). Invalid values log an error and
 fall back to the default.
@@ -233,28 +260,36 @@ fall back to the default.
 ### 3.5 Local testing (Docker Compose)
 
 A `compose.yaml` at the repo root runs the full stack locally for manual and
-integration testing. The SQLite fallback makes this possible with **zero
-external dependencies** — no Postgres required for the default profile.
+integration testing. The **default stack includes a Postgres container** so the
+full functionality — migrations on startup, the Postgres advisory-lock cleanup
+worker, and the Postgres store path — can be exercised locally with no
+external database. A SQLite-only profile is available as an opt-out for the
+zero-dependency path.
 
-- **Default profile (SQLite)**: `docker compose up` starts `frontend` and
-  `backend` only. `backend` runs with `DATABASE_URL` unset → SQLite fallback,
-  `SQLITE_PATH` pointed at a named volume (`/data/url-shortener.db`) so the
-  database survives `docker compose down` (but not `docker compose down -v`).
-  `backend.replicas` is effectively 1 (single backend container). The backend
-  logs the SQLite WARN on startup (§3.1).
-- **Postgres profile**: `docker compose --profile postgres up` additionally
-  starts a `postgres` service (image `postgres:16`) with a named volume, and
-  sets `DATABASE_URL` for the backend → Postgres mode with migrations. This is
-  the integration path for testing migrations and the advisory-lock cleanup.
+- **Default stack (Postgres)**: `docker compose up` starts `postgres`,
+  `backend`, and `frontend`. The `postgres` service uses image `postgres:16`
+  with a named volume for persistence; the `backend` service is wired to it
+  via `DATABASE_URL` (composed from `POSTGRES_USER`/`POSTGRES_PASSWORD`/
+  `POSTGRES_DB`) → Postgres mode: golang-migrate runs on startup, the cleanup
+  worker uses `pg_try_advisory_xact_lock`, and the Postgres store path is
+  exercised. This is the primary local testing path.
+- **SQLite profile**: `docker compose --profile sqlite up` starts `backend`
+  and `frontend` only with `DATABASE_URL` unset → SQLite fallback
+  (`SQLITE_PATH` on a named volume). The backend logs the SQLite WARN on
+  startup (§3.1). This is the zero-dependency path and exercises the SQLite
+  store/worker paths (advisory lock skipped).
 - Services:
   - `frontend` — builds `frontend/Dockerfile`, exposes `:8080` on host port
     `8081` (or as configured).
   - `backend` — builds `backend/Dockerfile`, exposes `:8080` on host port
-    `8080`.
-  - `postgres` (profile `postgres`) — exposes `:5432` on host port `5432`.
+    `8080`; depends on `postgres` (default stack).
+  - `postgres` — image `postgres:16`, exposes `:5432` on host port `5432`,
+    named volume for `/var/lib/postgresql/data`.
 - `frontend.BACKEND_URL` points at `http://backend:8080` (in-compose DNS).
-- A `compose/README.md` documents both profiles, the exposed ports, the
-  volumes, and how to reset data (`docker compose down -v`).
+- `backend` uses `depends_on: postgres` with a healthcheck so migrations do
+  not race the DB startup.
+- A `compose/README.md` documents both stacks, the exposed ports, the
+  volumes, the env vars, and how to reset data (`docker compose down -v`).
 - Both `backend` and `frontend` services use `build:` pointing at their
   respective `Dockerfile` (Phase 5), so `docker compose up --build` exercises
   the real production images locally.
@@ -289,8 +324,17 @@ external dependencies** — no Postgres required for the default profile.
 - **Ingress** (single host): path rules `/api/*` → backend, everything else →
   frontend. TLS via cert-manager annotation
   `cert-manager.io/cluster-issuer: letsencrypt-prod` and a `tls` entry per host.
-- Probes: backend `/api/health` (added to the API), frontend `/healthz`
-  (returns 200 from the embedded server).
+- Probes & lifecycle (both Deployments): a **liveness** probe and a
+  **readiness** probe. The readiness probe hits the service health endpoint
+  (backend `/api/health`, frontend `/healthz`); during graceful shutdown that
+  endpoint returns **503**, which removes the pod from the Service
+  endpoints (and the nginx ingress) **before** the process exits, so
+  in-flight requests are not dropped. Each container has a **`preStop` hook**
+  (`exec: sleep 10` by default, configurable) that gives the load balancer time
+  to deregister the pod after readiness flips to failing and before SIGTERM is
+  delivered. `terminationGracePeriodSeconds` is set to `SHUTDOWN_TIMEOUT +
+  preStop` headroom (default `45s`). This is the Kubernetes-native
+  implementation of the §3.1/§3.2 graceful-shutdown contract.
 - Resources, replicas, and image pull policy are configurable in
   `values.yaml`; defaults are small/sane for a single node.
 - Image tag fields in `values.yaml`:
@@ -430,49 +474,70 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 2 — Backend core (store, shortcode, API)
 
-- [ ] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
+- [x] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
       `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`,
       `SQLITE_PATH`, `LISTEN_ADDR`, `SHORTCODE_LENGTH`, `LOG_LEVEL`,
-      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`; compose
-      `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is unset;
-      central duration parser (§3.1) with fallback + error logging.
-- [ ] 2.2 Implement `backend/internal/shortcode`: nanoid base62 generator
-      keyed on `SHORTCODE_LENGTH`; helper to regenerate on collision.
-- [ ] 2.3 Implement `backend/internal/store`: a storage interface with a
+      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`, `SHUTDOWN_TIMEOUT`;
+      compose `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is
+      unset; central duration parser (§3.1) with fallback + error logging.
+- [x] 2.2 Implement `backend/internal/shortcode`: base62 generator keyed
+      on `SHORTCODE_LENGTH` (crypto/rand) with a collision-regenerate helper.
+- [x] 2.3 Implement `backend/internal/store`: a storage interface with a
       `pgx` (Postgres) implementation and a SQLite implementation;
       `Create(shortcode, destination, expiresAt)`, `Get(shortcode)`,
       `DeleteOlderThan(retention)`, `DeleteExpired()`. All queries use
       parameterized arguments (no string interpolation of user input); the
-      SQL-injection guard tests (2.7) assert this.
-- [ ] 2.4 Implement `backend/internal/ratelimit`: per-client-IP token-bucket
+      SQL-injection guard tests (2.8) assert this.
+- [x] 2.4 Implement `backend/internal/ratelimit`: per-client-IP token-bucket
       limiter (§3.1) with `RATE_LIMITS` parsing (`"<count>/<window>"`),
       fallback to `100/1m` on parse failure, and a `Retry-After` hint.
-- [ ] 2.5 Implement `backend/internal/api`:
+- [x] 2.5 Implement `backend/internal/api`:
       `PUT /api/shorten`, `GET /api/resolve/:shortcode`, `GET /api/health`;
-      JSON error contract; destination validation; `ttl_seconds` →
-      `expires_at`; build `short_url` from request host; wrap `/api/*` in the
-      rate-limiter middleware (429 + `Retry-After` on exceed).
-- [ ] 2.6 `cmd/server/main.go`: load config → run migrations → start
-      worker → start HTTP server (graceful shutdown on SIGTERM).
-- [ ] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
+      JSON error contract; **destination input sanity check** (present,
+      non-empty, valid absolute `http`/`https` URL with non-empty host, else
+      400 with a human-readable `error` the frontend renders verbatim);
+      `ttl_seconds` (optional, non-negative integer) → `expires_at`; build
+      `short_url` from request host; wrap `/api/*` in the rate-limiter
+      middleware (429 + `Retry-After` on exceed).
+- [x] 2.6 `cmd/server/main.go`: load config → run migrations → start HTTP
+      server. The cleanup worker is started in Phase 3; Phase 2 ships the HTTP
+      API without the worker. Graceful shutdown is implemented in task 2.10.
+- [x] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
       ephemeral Postgres; API handlers (httptest) for success/404/validation
-      paths; rate-limiter allow/deny + `Retry-After` + parse-fallback behavior.
-- [ ] 2.8 SQL-injection guard tests: against both the Postgres and SQLite
+      paths (including invalid-URL 400 responses with the `error` field);
+      rate-limiter allow/deny + `Retry-After` + parse-fallback behavior.
+- [x] 2.8 SQL-injection guard tests: against both the Postgres and SQLite
       store implementations, assert that attacker-controlled `shortcode` /
       `destination` payloads (e.g. `' OR '1'='1`, `'; DROP TABLE links;--`,
       `""; --`, unicode/hex escapes) are stored/looked up as literal data and
       never alter the schema or bypass lookups. Verify the `links` table still
       exists and contains exactly the inserted rows after the payloads.
+- [x] 2.9 `backend/Dockerfile` (pulled forward from Phase 5.1): multi-stage
+      Go build (CGO disabled, pure-Go `modernc.org/sqlite`), alpine runtime,
+      expose 8080. Built `url-shortener-backend:dev` and ran the container
+      exposed on host port 8080 for manual/Postman testing.
+- [x] 2.10 Graceful shutdown (§3.1): `SHUTDOWN_TIMEOUT` (default `30s`) wired
+      in config; `api.Server` has a draining flag so `/api/health` returns
+      **503** `{"status":"draining"}` while draining; `cmd/server` on
+      SIGINT/SIGTERM sets draining, cancels the cleanup worker concurrently,
+      and calls `http.Server.Shutdown` with the `SHUTDOWN_TIMEOUT` context so
+      in-flight requests complete before exit (DB closed via defer). Unit
+      test `TestHealth_DrainingReturns503`; live smoke test confirmed an
+      in-flight shorten completed and the container exited 0.
 
 ### Phase 3 — Cleanup worker
 
-- [ ] 3.1 Implement `backend/internal/worker`: ticker on
-      `CLEANUP_FREQUENCY`; per tick, in Postgres mode acquire
-      `pg_try_advisory_lock` (skip in SQLite mode), run
+- [x] 3.1 Implement `backend/internal/worker`: ticker on
+      `CLEANUP_FREQUENCY`; per tick, in Postgres mode acquire a
+      **transaction-level** `pg_try_advisory_xact_lock` (held across the
+      cleanup queries, auto-released on commit; run via `store.WithTx`), run
       `DeleteOlderThan(now - RETENTION_PERIOD)` and `DeleteExpired()`, log
-      counts, release lock (Postgres only); non-overlapping ticks.
-- [ ] 3.2 Unit tests: lock contention (only one worker deletes) in Postgres
-      mode, retention boundary, expiry deletion, parse-fallback behavior.
+      counts; skip in SQLite mode (single-instance). Non-overlapping ticks.
+      Wired into `cmd/server/main.go` (started after DB ready, canceled on
+      shutdown).
+- [x] 3.2 Unit tests: lock contention (only one worker deletes) in Postgres
+      mode (held xact lock forces the worker to skip), retention boundary,
+      expiry deletion, parse-fallback behavior.
 
 ### Phase 4 — Frontend (Svelte SPA + Go server)
 
@@ -486,7 +551,9 @@ the `follow-development-plan` skill) — facts only, no narrative.
       `/healthz`.
 - [ ] 4.4 `frontend/embed.go` with `//go:embed dist` and a build step that
       runs `npm run build` into `frontend/dist`.
-- [ ] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown.
+- [ ] 4.5 `cmd/server/main.go`: config → HTTP server → graceful shutdown
+      (stop accepting new requests, return 503 on `/healthz`, drain
+      in-flight requests before exit per §3.2).
 - [ ] 4.6 Unit tests: redirect-page HTML contains the destination and
       `content="1"`, 404 path, proxy passthrough (httptest), asset serving.
 
@@ -500,12 +567,14 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [ ] 5.3 Verify both images build locally and the backend starts against a
       local Postgres and, with `DATABASE_URL` unset, against a local SQLite
       file (and logs the fallback WARN).
-- [ ] 5.4 `compose.yaml` + `compose/README.md` (§3.5): default SQLite profile
-      (frontend + backend, `SQLITE_PATH` on a named volume) and a `postgres`
-      profile (adds a `postgres:16` service + `DATABASE_URL` for the backend).
-      `docker compose up --build` and `docker compose --profile postgres up
-      --build` both reach a healthy `/api/health` and the frontend UI; verify
-      data survives `docker compose down` but not `docker compose down -v`.
+- [ ] 5.4 `compose.yaml` + `compose/README.md` (§3.5): **default Postgres
+      stack** (`postgres:16` + `backend` + `frontend`, `DATABASE_URL` wired
+      so migrations + advisory-lock cleanup run) and a `sqlite` opt-out
+      profile (`backend` + `frontend` only, `DATABASE_URL` unset). `backend`
+      uses `depends_on: postgres` with a healthcheck. `docker compose up
+      --build` (Postgres) and `docker compose --profile sqlite up --build`
+      both reach a healthy `/api/health` and the frontend UI; verify data
+      survives `docker compose down` but not `docker compose down -v`.
 
 ### Phase 6 — Helm chart
 
@@ -521,7 +590,14 @@ the `follow-development-plan` skill) — facts only, no narrative.
       frontend, cert-manager TLS), probes, a Postgres `Secret` + env injection
       created only when `postgres.enabled: true`, optional backend PVC for
       SQLite `SQLITE_PATH`.
-- [ ] 6.4 `helm lint` and `helm template` pass for both `postgres.enabled: true`
+- [ ] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
+      hitting the service health endpoint (backend `/api/health`, frontend
+      `/healthz`); a `preStop: exec: sleep 10` hook; `terminationGracePeriodSeconds`
+      set to `SHUTDOWN_TIMEOUT + preStop` headroom (default `45s`). The
+      readiness probe + 503-during-shutdown (§3.1/§3.2) removes the pod from
+      Service/ingress endpoints before the process exits, so in-flight
+      requests are not dropped.
+- [ ] 6.5 `helm lint` and `helm template` pass for both `postgres.enabled: true`
       and `postgres.enabled: false`; dry-run against the target cluster (per
       the development-workflow skill).
 
