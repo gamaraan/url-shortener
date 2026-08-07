@@ -48,7 +48,7 @@ background goroutine inside the backend service (not a separate folder/image).
 │   │   ├── sqlite/          # latest-schema bootstrap for the SQLite fallback
 │   │   ├── config/           # env parsing + duration parser
 │   │   └── shortcode/       # nanoid base62 generator + collision check
-│   ├── migrations/           # *.up.sql / *.down.sql (embedded; Postgres only)
+│   ├── internal/migrate/migrations/  # *.up.sql / *.down.sql (embedded; Postgres only)
 │   ├── Dockerfile
 │   └── *_test.go
 ├── frontend/                # Go server embedding Svelte SPA
@@ -394,21 +394,23 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 1 — Database & migrations
 
-- [ ] 1.1 Write `backend/migrations/0001_init.up.sql` / `…down.sql` creating
-      the `links` table, indexes, and the partial `expires_at` index for
-      Postgres (§3.3).
-- [ ] 1.2 Implement `backend/internal/migrate` using golang-migrate with the
-      migrations embedded via `embed.FS`; expose `Run(ctx, dbURL) error`.
+- [x] 1.1 Write `backend/internal/migrate/migrations/0001_init.up.sql` /
+      `…down.sql` creating the `links` table, indexes, and the partial
+      `expires_at` index for Postgres (§3.3). Migrations are colocated with
+      the `migrate` package so `//go:embed migrations/*.sql` resolves.
+- [x] 1.2 Implement `backend/internal/migrate` using golang-migrate with the
+      migrations embedded via `embed.FS`; expose `Run(ctx, dbURL) error` and
+      `Down(ctx, dbURL) error` (Down supports the down+up idempotency test).
       Postgres-only.
-- [ ] 1.3 Implement `backend/internal/sqlite`: bootstrap the SQLite file at
+- [x] 1.3 Implement `backend/internal/sqlite`: bootstrap the SQLite file at
       `SQLITE_PATH` with the latest schema directly (`CREATE TABLE IF NOT
       EXISTS` + indexes); no migration files are read. Idempotent.
-- [ ] 1.4 Implement the startup database selection in `cmd/server/main.go`:
+- [x] 1.4 Implement the startup database selection in `cmd/server/main.go`:
       if `DATABASE_URL` set → Postgres mode (run migrations); else → SQLite
       fallback (bootstrap latest schema) and log the WARN that temporary
       storage is in use, data will be lost on restart, and only one backend
       instance may run.
-- [ ] 1.5 Unit tests: Postgres migrations against an ephemeral Postgres
+- [x] 1.5 Unit tests: Postgres migrations against an ephemeral Postgres
       (testcontainers or CI service) assert schema exists and down+up is
       idempotent; SQLite bootstrap is idempotent and creates the expected
       schema.

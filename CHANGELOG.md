@@ -27,6 +27,14 @@ All notable changes to this project are recorded here. Entries follow
   full stack locally. Default profile uses the SQLite fallback (no Postgres
   needed); a `postgres` profile adds a `postgres:16` service for testing
   Postgres mode + migrations. Local testing only — production deploys via Helm.
+- Phase 1 (database & migrations): `backend/internal/migrate` (golang-migrate
+  - `embed.FS`, `Run`/`Down`) for Postgres with `0001_init.up/down.sql`
+  creating the `links` table + indexes; `backend/internal/sqlite` bootstrap
+  (pure-Go `modernc.org/sqlite`, latest schema, idempotent) for the fallback;
+  startup DB selection in `cmd/server/main.go` (Postgres migrations vs SQLite
+  fallback with the temporary-storage WARN). Unit tests pass: Postgres
+  migrations against a testcontainers `postgres:16-alpine` (Docker-gated) and
+  SQLite bootstrap idempotency.
 
 ### Changed
 
