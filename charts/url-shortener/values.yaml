@@ -46,7 +46,7 @@ postgres:
   # back to a local SQLite file (single instance only).
   enabled: true
   # External Postgres in the db namespace (service postgres, ClusterIP).
-  host: "postgres.db" # POSTGRES_HOST
+  host: "postgres.db.svc.cluster.local" # POSTGRES_HOST (cross-namespace FQDN: <service>.<namespace>.svc.cluster.local)
   port: "5432" # POSTGRES_PORT
   database: "urlshortener" # POSTGRES_DB
   # Credential VALUES are supplied at deploy time from GitHub secrets (CI) or
