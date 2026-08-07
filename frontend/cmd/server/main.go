@@ -2,6 +2,7 @@
 //
 // Phase 4: config → frontend HTTP server (embedded Svelte SPA + reverse proxy
 // + redirect page) with graceful shutdown. See development.md §3.2.
+// appVersion: 0.1.0
 package main
 
 import (
