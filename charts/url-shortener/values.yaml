@@ -6,7 +6,7 @@
 backend:
   image:
     repository: ghcr.io/gamaraan/url-shortener/backend
-    tag: ""  # set by CI (yyyy.mm.dd-xxxxxxxx)
+    tag: "" # set by CI (yyyy.mm.dd-xxxxxxxx)
   replicas: 1
   listenAddr: ":8080"
   retentionPeriod: "3650d"
@@ -21,7 +21,7 @@ backend:
 frontend:
   image:
     repository: ghcr.io/gamaraan/url-shortener/frontend
-    tag: ""  # set by CI (yyyy.mm.dd-xxxxxxxx)
+    tag: "" # set by CI (yyyy.mm.dd-xxxxxxxx)
   replicas: 1
   listenAddr: ":8080"
   backendURL: "http://backend:8080"
@@ -33,13 +33,13 @@ postgres:
   enabled: true
   # Credential VALUES are supplied at deploy time from GitHub secrets via
   # --set/--set-string; they are never committed here.
-  host: ""       # POSTGRES_HOST
-  port: "5432"   # POSTGRES_PORT
-  database: "urlshortener"  # POSTGRES_DB
-  user: ""       # POSTGRES_USER
-  password: ""   # POSTGRES_PASSWORD
+  host: "" # POSTGRES_HOST
+  port: "5432" # POSTGRES_PORT
+  database: "urlshortener" # POSTGRES_DB
+  user: "" # POSTGRES_USER
+  password: "" # POSTGRES_PASSWORD
   # Optional full libpq URL; overrides the composed POSTGRES_* form.
-  url: ""        # DATABASE_URL
+  url: "" # DATABASE_URL
 
 ingress:
   enabled: true
