@@ -35,6 +35,12 @@ All notable changes to this project are recorded here. Entries follow
   fallback with the temporary-storage WARN). Unit tests pass: Postgres
   migrations against a testcontainers `postgres:16-alpine` (Docker-gated) and
   SQLite bootstrap idempotency.
+- Plan: per-client-IP rate limiting on all `/api/*` routes, configurable via
+  `RATE_LIMITS` (default `100/1m`), 429 + `Retry-After` on exceed; parse
+  failure logs an error and falls back to the default.
+- Plan: SQL-injection guard unit tests for both Postgres and SQLite stores,
+  asserting attacker-controlled `shortcode`/`destination` payloads are stored
+  and looked up as literal data (no schema alteration, no lookup bypass).
 
 ### Changed
 

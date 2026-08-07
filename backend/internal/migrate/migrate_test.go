@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/gamaraan/url-shortener/backend/internal/migrate"
+	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver for database/sql
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
-	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver for database/sql
 )
 
 // dockerAvailable reports whether the Docker daemon is reachable. The
