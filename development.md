@@ -632,28 +632,33 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 6 — Helm chart
 
-- [ ] 6.1 `Chart.yaml` with chart metadata and a starting `version`.
-- [ ] 6.2 `values.yaml` with backend/frontend image + tag fields, ingress
+- [x] 6.1 `Chart.yaml` with chart metadata and a starting `version`.
+- [x] 6.2 `values.yaml` with backend/frontend image + tag fields, ingress
       host, TLS, env vars, replicas, resources, `postgres.enabled` toggle
       (default `true`) plus `postgres.*` credential placeholders (values never
       committed — supplied from GitHub secrets at deploy time), optional backend
-      PVC for SQLite mode.
-- [ ] 6.3 Templates: namespace, backend Deployment+Service+env (replicas
+      PVC for SQLite mode. Added `shutdownTimeout`, `preStopSleep`, and
+      `terminationGracePeriodSeconds` for both services.
+- [x] 6.3 Templates: namespace, backend Deployment+Service+env (replicas
       forced to 1 when `postgres.enabled: false`), frontend
       Deployment+Service+env, Ingress (nginx, `/api/*` → backend, rest →
       frontend, cert-manager TLS), probes, a Postgres `Secret` + env injection
       created only when `postgres.enabled: true`, optional backend PVC for
-      SQLite `SQLITE_PATH`.
-- [ ] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
+      SQLite `SQLITE_PATH`. `_helpers.tpl` provides name/label/DATABASE_URL
+      helpers.
+- [x] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
       hitting the service health endpoint (backend `/api/health`, frontend
       `/healthz`); a `preStop: exec: sleep 10` hook; `terminationGracePeriodSeconds`
       set to `SHUTDOWN_TIMEOUT + preStop` headroom (default `45s`). The
       readiness probe + 503-during-shutdown (§3.1/§3.2) removes the pod from
       Service/ingress endpoints before the process exits, so in-flight
       requests are not dropped.
-- [ ] 6.5 `helm lint` and `helm template` pass for both `postgres.enabled: true`
-      and `postgres.enabled: false`; dry-run against the target cluster (per
-      the development-workflow skill).
+- [x] 6.5 `helm lint` and `helm template` pass for both `postgres.enabled: true`
+      and `postgres.enabled: false`; rendered YAML validated as parseable.
+      (Dry-run against the target cluster is Phase 8.3 — deferred until the
+      cluster + secrets are ready.) Pi-lens YAML findings on the templates
+      are false positives (raw Helm `{{- }}` directives parsed as YAML) and
+      suppressed with `# pi-lens-ignore: YAML:0` per file.
 
 ### Phase 7 — GitHub Actions
 

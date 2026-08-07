@@ -13,10 +13,16 @@ backend:
   cleanupFrequency: "60m"
   shortcodeLength: 7
   logLevel: "info"
+  rateLimits: "100/1m"
+  shutdownTimeout: "30s"
+  preStopSleep: 10
+  terminationGracePeriodSeconds: 45
   sqlitePath: "/data/url-shortener.db"
   # Optional PVC for SQLite persistence (only useful when postgres.enabled is false).
   persistence:
     enabled: false
+    size: "1Gi"
+    storageClassName: ""
 
 frontend:
   image:
@@ -25,6 +31,10 @@ frontend:
   replicas: 1
   listenAddr: ":8080"
   backendURL: "http://backend:8080"
+  logLevel: "info"
+  shutdownTimeout: "30s"
+  preStopSleep: 10
+  terminationGracePeriodSeconds: 45
 
 postgres:
   # When true, the chart creates a Secret with the credentials below and

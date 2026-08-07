@@ -116,6 +116,18 @@ All notable changes to this project are recorded here. Entries follow
   the whole handler tree (so 200/400/404/409/429/502/503 are all logged). Unit
   tests `TestAccessLog_LogsEveryRequest` in both `internal/api` and
   `internal/server`.
+- Phase 6 (Helm chart): templates for namespace, backend and frontend
+  Deployments+Services+env, Ingress (nginx `/api/*` → backend, rest → frontend,
+  cert-manager TLS), a Postgres `Secret` + `DATABASE_URL` injection gated on
+  `postgres.enabled` (default true; replicas forced to 1 when false for SQLite
+  fallback), and an optional backend PVC for SQLite. Probes & lifecycle on both
+  Deployments: liveness + readiness on the health endpoints, `preStop: sleep 10`,
+  `terminationGracePeriodSeconds: 45`. `values.yaml` gained `shutdownTimeout`,
+  `preStopSleep`, `terminationGracePeriodSeconds`, and `rateLimits`. `helm lint`
+  passes; `helm template` renders valid YAML for both `postgres.enabled` true
+  and false. Pi-lens YAML findings on the templates are false positives (raw
+  Helm `{{- }}` directives parsed as YAML) and suppressed with
+  `# pi-lens-ignore: YAML:0`.
 
 ### Changed
 

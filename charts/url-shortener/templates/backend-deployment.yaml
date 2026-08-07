@@ -1,0 +1,84 @@
+# pi-lens-ignore: YAML:0 — Helm templates are not raw YAML; they render to valid YAML (verified via helm template).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backend.fullname" . }}
+  namespace: {{ include "url-shortener.namespace" . }}
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+spec:
+  # When Postgres is disabled (SQLite fallback), force a single instance.
+  {{- if .Values.postgres.enabled }}
+  replicas: {{ .Values.backend.replicas }}
+  {{- else }}
+  replicas: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "backend.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.backend.terminationGracePeriodSeconds }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default "latest" }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: LISTEN_ADDR
+              value: {{ .Values.backend.listenAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.backend.logLevel | quote }}
+            - name: RETENTION_PERIOD
+              value: {{ .Values.backend.retentionPeriod | quote }}
+            - name: CLEANUP_FREQUENCY
+              value: {{ .Values.backend.cleanupFrequency | quote }}
+            - name: SHORTCODE_LENGTH
+              value: {{ .Values.backend.shortcodeLength | quote }}
+            - name: RATE_LIMITS
+              value: {{ .Values.backend.rateLimits | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.backend.shutdownTimeout | quote }}
+            - name: SQLITE_PATH
+              value: {{ .Values.backend.sqlitePath | quote }}
+            {{- if .Values.postgres.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "postgres.secretName" . }}
+                  key: DATABASE_URL
+            {{- end }}
+          {{- if .Values.backend.persistence.enabled }}
+          volumeMounts:
+            - name: sqlite-data
+              mountPath: /data
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.backend.preStopSleep }}"]
+          resources:
+            {{- toYaml .Values.resources.backend | nindent 12 }}
+      {{- if .Values.backend.persistence.enabled }}
+      volumes:
+        - name: sqlite-data
+          persistentVolumeClaim:
+            claimName: {{ include "backend.fullname" . }}-sqlite
+      {{- end }}
