@@ -4,7 +4,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "backend.fullname" . }}-sqlite
-  namespace: {{ include "url-shortener.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "backend.labels" . | nindent 4 }}
 spec:

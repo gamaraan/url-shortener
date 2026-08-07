@@ -667,13 +667,15 @@ the `follow-development-plan` skill) — facts only, no narrative.
       committed — supplied from GitHub secrets at deploy time), optional backend
       PVC for SQLite mode. Added `shutdownTimeout`, `preStopSleep`, and
       `terminationGracePeriodSeconds` for both services.
-- [x] 6.3 Templates: namespace, backend Deployment+Service+env (replicas
+- [x] 6.3 Templates: backend Deployment+Service+env (replicas
       forced to 1 when `postgres.enabled: false`), frontend
       Deployment+Service+env, Ingress (nginx, `/api/*` → backend, rest →
       frontend, cert-manager TLS), probes, a Postgres `Secret` + env injection
       created only when `postgres.enabled: true`, optional backend PVC for
       SQLite `SQLITE_PATH`. `_helpers.tpl` provides name/label/DATABASE_URL
-      helpers.
+      helpers. **No `Namespace` template** — the namespace is created by
+      `helm upgrade --install --create-namespace`; all resources use
+      `namespace: {{ .Release.Namespace }}` (set by `--namespace tinyurl`).
 - [x] 6.4 Probes & lifecycle (both Deployments): liveness + readiness probes
       hitting the service health endpoint (backend `/api/health`, frontend
       `/healthz`); a `preStop: exec: sleep 10` hook; `terminationGracePeriodSeconds`
