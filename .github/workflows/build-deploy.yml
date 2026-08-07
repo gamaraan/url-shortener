@@ -245,11 +245,15 @@ jobs:
         run: |
           set -euo pipefail
           # Build the postgres credential --set flags (postgres.enabled is true).
+          # Use --set-string for all credential values so Helm keeps them as
+          # strings (a bare --set parses numeric-looking values like the port
+          # "5432" as int, which then formats as %!s(int64=5432) in the
+          # DATABASE_URL helper and breaks the libpq URL).
           helm upgrade --install url-shortener ./charts/url-shortener \
             --namespace tinyurl --create-namespace \
             -f ./charts/url-shortener/values.yaml \
-            --set postgres.host="${{ secrets.POSTGRES_HOST }}" \
-            --set postgres.port="${{ secrets.POSTGRES_PORT }}" \
-            --set postgres.database="${{ secrets.POSTGRES_DB }}" \
-            --set postgres.user="${{ secrets.POSTGRES_USER }}" \
+            --set-string postgres.host="${{ secrets.POSTGRES_HOST }}" \
+            --set-string postgres.port="${{ secrets.POSTGRES_PORT }}" \
+            --set-string postgres.database="${{ secrets.POSTGRES_DB }}" \
+            --set-string postgres.user="${{ secrets.POSTGRES_USER }}" \
             --set-string postgres.password="${{ secrets.POSTGRES_PASSWORD }}"
