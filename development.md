@@ -477,9 +477,9 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [x] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
       `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`,
       `SQLITE_PATH`, `LISTEN_ADDR`, `SHORTCODE_LENGTH`, `LOG_LEVEL`,
-      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`; compose
-      `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is unset;
-      central duration parser (§3.1) with fallback + error logging.
+      `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`, `SHUTDOWN_TIMEOUT`;
+      compose `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is
+      unset; central duration parser (§3.1) with fallback + error logging.
 - [x] 2.2 Implement `backend/internal/shortcode`: base62 generator keyed
       on `SHORTCODE_LENGTH` (crypto/rand) with a collision-regenerate helper.
 - [x] 2.3 Implement `backend/internal/store`: a storage interface with a
@@ -500,12 +500,8 @@ the `follow-development-plan` skill) — facts only, no narrative.
       `short_url` from request host; wrap `/api/*` in the rate-limiter
       middleware (429 + `Retry-After` on exceed).
 - [x] 2.6 `cmd/server/main.go`: load config → run migrations → start HTTP
-      server (graceful shutdown on SIGTERM). The cleanup worker is started in
-      Phase 3; Phase 2 ships the HTTP API without the worker.
-      *(Graceful-shutdown refinement — stop accepting new requests, return 503
-      on `/api/health`, drain in-flight requests before exit — is added when
-      `SHUTDOWN_TIMEOUT` is wired; tracked in §3.1 and the Phase 6.4 lifecycle
-      task.)*
+      server. The cleanup worker is started in Phase 3; Phase 2 ships the HTTP
+      API without the worker. Graceful shutdown is implemented in task 2.10.
 - [x] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
       ephemeral Postgres; API handlers (httptest) for success/404/validation
       paths (including invalid-URL 400 responses with the `error` field);
@@ -520,6 +516,14 @@ the `follow-development-plan` skill) — facts only, no narrative.
       Go build (CGO disabled, pure-Go `modernc.org/sqlite`), alpine runtime,
       expose 8080. Built `url-shortener-backend:dev` and ran the container
       exposed on host port 8080 for manual/Postman testing.
+- [x] 2.10 Graceful shutdown (§3.1): `SHUTDOWN_TIMEOUT` (default `30s`) wired
+      in config; `api.Server` has a draining flag so `/api/health` returns
+      **503** `{"status":"draining"}` while draining; `cmd/server` on
+      SIGINT/SIGTERM sets draining, cancels the cleanup worker concurrently,
+      and calls `http.Server.Shutdown` with the `SHUTDOWN_TIMEOUT` context so
+      in-flight requests complete before exit (DB closed via defer). Unit
+      test `TestHealth_DrainingReturns503`; live smoke test confirmed an
+      in-flight shorten completed and the container exited 0.
 
 ### Phase 3 — Cleanup worker
 
