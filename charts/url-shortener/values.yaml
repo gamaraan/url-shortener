@@ -10,7 +10,7 @@ namespace: tinyurl
 backend:
   image:
     repository: ghcr.io/gamaraan/url-shortener/backend
-    tag: "" # set by CI (yyyy.mm.dd-xxxxxxxx)
+    tag: "2026.08.07-402d945a"
   replicas: 1
   listenAddr: ":8080"
   retentionPeriod: "3650d"
@@ -31,7 +31,7 @@ backend:
 frontend:
   image:
     repository: ghcr.io/gamaraan/url-shortener/frontend
-    tag: "" # set by CI (yyyy.mm.dd-xxxxxxxx)
+    tag: "2026.08.07-402d945a"
   replicas: 1
   listenAddr: ":8080"
   backendURL: "http://backend:8080"
