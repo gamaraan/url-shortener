@@ -84,8 +84,16 @@ background goroutine inside the backend service (not a separate folder/image).
   - `PUT /api/shorten` — body `{"destination":"…","ttl_seconds":<int, optional>}`.
     Returns `{"short_url":"https://<host>/<shortcode>","shortcode":"…","destination":"…"}`.
     `host` is taken from the `X-Forwarded-Host` / `Host` request header so the
-    returned short URL is correct behind the ingress. Validates the destination
-    is an absolute URL with scheme `http`/`https`.
+    returned short URL is correct behind the ingress. **Input sanity check**:
+    before any storage work, the backend validates that `destination` is
+    present, non-empty, and a valid absolute URL with scheme `http` or `https`
+    and a non-empty host (parsed via `net/url`). If the payload is missing,
+    not valid JSON, or the URL is invalid, it responds **400 Bad Request** with
+    JSON `{"error":"<reason>"}` (e.g. `destination is required`,
+    `destination must be an absolute http(s) URL`, `invalid request body`).
+    The frontend renders this `error` field verbatim so the user sees the
+    exact reason. `ttl_seconds`, when present, must be a non-negative integer;
+    a negative or non-integer value is a 400 with a relevant message.
   - `GET /api/resolve/:shortcode` — returns
     `{"shortcode":"…","destination":"…"}` with HTTP 200, or 404 (JSON error)
     when not found / expired. Does **not** record the hit here; the hit counter
@@ -430,39 +438,48 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 2 — Backend core (store, shortcode, API)
 
-- [ ] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
+- [x] 2.1 Implement `backend/internal/config`: parse `DATABASE_URL`,
       `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`,
       `SQLITE_PATH`, `LISTEN_ADDR`, `SHORTCODE_LENGTH`, `LOG_LEVEL`,
       `RETENTION_PERIOD`, `CLEANUP_FREQUENCY`, `RATE_LIMITS`; compose
       `DATABASE_URL` from the `POSTGRES_*` vars when `DATABASE_URL` is unset;
       central duration parser (§3.1) with fallback + error logging.
-- [ ] 2.2 Implement `backend/internal/shortcode`: nanoid base62 generator
-      keyed on `SHORTCODE_LENGTH`; helper to regenerate on collision.
-- [ ] 2.3 Implement `backend/internal/store`: a storage interface with a
+- [x] 2.2 Implement `backend/internal/shortcode`: base62 generator keyed
+      on `SHORTCODE_LENGTH` (crypto/rand) with a collision-regenerate helper.
+- [x] 2.3 Implement `backend/internal/store`: a storage interface with a
       `pgx` (Postgres) implementation and a SQLite implementation;
       `Create(shortcode, destination, expiresAt)`, `Get(shortcode)`,
       `DeleteOlderThan(retention)`, `DeleteExpired()`. All queries use
       parameterized arguments (no string interpolation of user input); the
-      SQL-injection guard tests (2.7) assert this.
-- [ ] 2.4 Implement `backend/internal/ratelimit`: per-client-IP token-bucket
+      SQL-injection guard tests (2.8) assert this.
+- [x] 2.4 Implement `backend/internal/ratelimit`: per-client-IP token-bucket
       limiter (§3.1) with `RATE_LIMITS` parsing (`"<count>/<window>"`),
       fallback to `100/1m` on parse failure, and a `Retry-After` hint.
-- [ ] 2.5 Implement `backend/internal/api`:
+- [x] 2.5 Implement `backend/internal/api`:
       `PUT /api/shorten`, `GET /api/resolve/:shortcode`, `GET /api/health`;
-      JSON error contract; destination validation; `ttl_seconds` →
-      `expires_at`; build `short_url` from request host; wrap `/api/*` in the
-      rate-limiter middleware (429 + `Retry-After` on exceed).
-- [ ] 2.6 `cmd/server/main.go`: load config → run migrations → start
-      worker → start HTTP server (graceful shutdown on SIGTERM).
-- [ ] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
+      JSON error contract; **destination input sanity check** (present,
+      non-empty, valid absolute `http`/`https` URL with non-empty host, else
+      400 with a human-readable `error` the frontend renders verbatim);
+      `ttl_seconds` (optional, non-negative integer) → `expires_at`; build
+      `short_url` from request host; wrap `/api/*` in the rate-limiter
+      middleware (429 + `Retry-After` on exceed).
+- [x] 2.6 `cmd/server/main.go`: load config → run migrations → start HTTP
+      server (graceful shutdown on SIGTERM). The cleanup worker is started in
+      Phase 3; Phase 2 ships the HTTP API without the worker.
+- [x] 2.7 Unit tests: shortcode uniqueness/collision; store CRUD against
       ephemeral Postgres; API handlers (httptest) for success/404/validation
-      paths; rate-limiter allow/deny + `Retry-After` + parse-fallback behavior.
-- [ ] 2.8 SQL-injection guard tests: against both the Postgres and SQLite
+      paths (including invalid-URL 400 responses with the `error` field);
+      rate-limiter allow/deny + `Retry-After` + parse-fallback behavior.
+- [x] 2.8 SQL-injection guard tests: against both the Postgres and SQLite
       store implementations, assert that attacker-controlled `shortcode` /
       `destination` payloads (e.g. `' OR '1'='1`, `'; DROP TABLE links;--`,
       `""; --`, unicode/hex escapes) are stored/looked up as literal data and
       never alter the schema or bypass lookups. Verify the `links` table still
       exists and contains exactly the inserted rows after the payloads.
+- [x] 2.9 `backend/Dockerfile` (pulled forward from Phase 5.1): multi-stage
+      Go build (CGO disabled, pure-Go `modernc.org/sqlite`), alpine runtime,
+      expose 8080. Built `url-shortener-backend:dev` and ran the container
+      exposed on host port 8080 for manual/Postman testing.
 
 ### Phase 3 — Cleanup worker
 

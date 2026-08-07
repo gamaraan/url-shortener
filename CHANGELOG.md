@@ -41,6 +41,19 @@ All notable changes to this project are recorded here. Entries follow
 - Plan: SQL-injection guard unit tests for both Postgres and SQLite stores,
   asserting attacker-controlled `shortcode`/`destination` payloads are stored
   and looked up as literal data (no schema alteration, no lookup bypass).
+- Plan: input sanity check on `PUT /api/shorten` — `destination` must be a
+  valid absolute `http`/`https` URL with a non-empty host; invalid/missing
+  payloads return 400 with a human-readable `error` the frontend renders
+  verbatim. `ttl_seconds`, when present, must be a non-negative integer.
+- Phase 2 (backend core): `internal/config` (env + duration parser +
+  `RATE_LIMITS`/`POSTGRES_*` composition with fallbacks), `internal/shortcode`
+  (crypto/rand base62), `internal/store` (Postgres + SQLite, parameterized
+  queries), `internal/ratelimit` (per-IP token-bucket, 429 + `Retry-After`),
+  `internal/api` (`PUT /api/shorten` with URL sanity check, `GET /api/resolve/`,
+  `GET /api/health`), `cmd/server` HTTP server with graceful shutdown.
+  Unit tests pass: config, shortcode, ratelimit, API handlers, and
+  SQL-injection guard tests for both Postgres (testcontainers) and SQLite.
+  Backend Docker image built and running on host port 8080 for manual testing.
 
 ### Changed
 
