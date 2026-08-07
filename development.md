@@ -716,22 +716,27 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 8 — Cluster secrets & first deploy
 
-- [ ] 8.1 Create GitHub secrets: `KUBECONFIG` (base64 of the k0s kubeconfig)
-      and the `POSTGRES_*` (and/or `DATABASE_URL`) credentials used when
-      `postgres.enabled` is true.
-- [ ] 8.2 Confirm cert-manager ClusterIssuer `letsencrypt-prod` exists on the
+- [x] 8.1 Create GitHub secrets: `KUBECONFIG` (base64 of the gamara.ro
+      kubeconfig) and the `POSTGRES_*` + `DATABASE_URL` credentials used when
+      `postgres.enabled` is true. Set.
+- [x] 8.2 Confirm cert-manager ClusterIssuer `letsencrypt-prod` exists on the
       cluster; set `ingress.tls.host` and cluster-issuer annotation in
-      `values.yaml`.
-- [ ] 8.3 First real deploy via the workflow; verify ingress + TLS + API +
-      UI + redirect end to end.
+      `values.yaml` (`ingress.host: tinyurl.gamara.ro`).
+- [x] 8.3 First real deploy via the workflow; verified ingress + TLS + API +
+      UI + redirect end to end: `PUT /api/shorten` returns a short URL at
+      `tinyurl.gamara.ro`, invalid URLs return 400, `/api/health` and
+      `/healthz` return 200, and `GET /{shortcode}` renders the themed 1s
+      redirect page (verified with `8QFA9Ga` → the GitHub Actions docs URL).
 
 ### Phase 9 — Documentation
 
-- [ ] 9.1 `README.md`: architecture diagram (ASCII), local dev, env vars,
+- [x] 9.1 `README.md`: architecture diagram (ASCII), local dev, env vars,
       how to run migrations locally, how to build images, how to deploy
-      with helm, how the CI tags and deploys.
-- [ ] 9.2 Keep `CHANGELOG.md` updated per PR (Added/Changed/Fixed/Removed).
-- [ ] 9.3 Document the duration-string grammar and fallback behavior.
+      with helm, how the CI tags and deploys, API documentation, local
+      testing, and the live environment details.
+- [x] 9.2 Keep `CHANGELOG.md` updated per PR (Added/Changed/Fixed/Removed).
+- [x] 9.3 Document the duration-string grammar and fallback behavior (in
+      README and `development.md` §3.1).
 
 ## 9. Out of scope (explicit)
 

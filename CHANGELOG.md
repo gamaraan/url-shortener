@@ -134,7 +134,7 @@ All notable changes to this project are recorded here. Entries follow
   `--create-namespace` and all resources use `namespace: {{ .Release.Namespace }}`.
 - Phase 7 (GitHub Actions): two workflows under `.github/workflows/`.
   `unit-tests.yml` runs `go vet`+`go test` (backend, frontend) and `npm ci`+
-  `npm test` (frontend/web) on push to non-`main` branches and PRs (no
+  `npm test` (frontend/web) on push to non-`main` branches (no
   build/deploy, concurrency-cancels in-progress runs). `build-deploy.yml` runs
   on push to `main` (+ dispatch): a mandatory unit-test gate, then per-service
   GHCR build+push with the `yyyy.mm.dd-xxxxxxxx` tag (from the latest commit
@@ -145,6 +145,14 @@ All notable changes to this project are recorded here. Entries follow
   pass `actionlint` + `shellcheck` clean (zero errors) per the
   `lint-github-actions` skill; zizmor security advisories (unpinned action
   SHAs, broad token permissions) are noted as deferred hardening.
+- Phase 8 (cluster secrets + first deploy): GitHub secrets set (`KUBECONFIG`,
+  `POSTGRES_*`, `DATABASE_URL`); cert-manager `letsencrypt-prod` confirmed;
+  first deploy via the workflow verified end-to-end on `tinyurl.gamara.ro`
+  (shorten, resolve, themed 1s redirect, health endpoints, invalid-URL 400).
+- Phase 9 (documentation): `README.md` with features, architecture diagram,
+  API documentation, configuration, duration grammar, local testing, Helm
+  deployment, CI/CD, and the live environment details. `development.md` Phase
+  8 + Phase 9 tasks marked `[x]`. `CHANGELOG.md` kept up to date per PR.
 
 ### Changed
 
