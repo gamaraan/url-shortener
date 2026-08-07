@@ -21,8 +21,8 @@ the original URL or return an error message as JSON.
 
 ## Implementation
 
-- Develop your API using **Go**. We value good unit tests.
-- Commit your work as you go in a git repository. This repository can be local
-  or hosted, but we would like to see your commit history.
-- Document your project in a `README.md` markdown file as part of your
-  repository.
+- Develop API using **Go**.
+- Implement unit tests for the API.
+- Commit work to feature / fixes branches
+- Document project in a `README.md`
+- Document progress in a `CHANGELOG.md`
