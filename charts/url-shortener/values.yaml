@@ -34,7 +34,7 @@ frontend:
     tag: "2026.08.07-402d945a"
   replicas: 1
   listenAddr: ":8080"
-  backendURL: "http://backend:8080"
+  backendURL: "http://url-shortener-backend:8080"
   logLevel: "info"
   shutdownTimeout: "30s"
   preStopSleep: 10
