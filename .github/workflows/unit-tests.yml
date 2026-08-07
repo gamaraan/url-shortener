@@ -8,9 +8,10 @@ on:
     branches:
       - "**"
       - "!main"
-  pull_request:
-    branches:
-      - main
+  # No pull_request trigger: pushing to a feature branch with an open PR
+  # would otherwise fire both push and pull_request, producing duplicate
+  # runs. GitHub surfaces the push-event checks on the PR, so a single run
+  # per push is sufficient for the CI gate.
 
 # Cancel in-progress runs on the same branch when a new push arrives.
 concurrency:

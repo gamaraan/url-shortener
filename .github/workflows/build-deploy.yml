@@ -127,9 +127,9 @@ jobs:
       - id: tag
         run: |
           set -euo pipefail
-          sha=$(git rev-list -1 --pretty=%H -- backend/ | tail -1 | tr -d ' ')
+          sha=$(git log -1 --format=%H -- backend/)
           short_sha=$(git rev-parse --short=8 "$sha")
-          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' --date=format-short -- backend/)
+          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' -- backend/)
           tag="${date}-${short_sha}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Computed backend tag: $tag"
@@ -160,9 +160,9 @@ jobs:
       - id: tag
         run: |
           set -euo pipefail
-          sha=$(git rev-list -1 --pretty=%H -- frontend/ | tail -1 | tr -d ' ')
+          sha=$(git log -1 --format=%H -- frontend/)
           short_sha=$(git rev-parse --short=8 "$sha")
-          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' --date=format-short -- frontend/)
+          date=$(git log -1 --format=%cd --date=format:'%Y.%m.%d' -- frontend/)
           tag="${date}-${short_sha}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Computed frontend tag: $tag"

@@ -2,6 +2,7 @@
 //
 // Phase 2: config → database selection → store → HTTP API server with graceful
 // shutdown. The cleanup worker is added in Phase 3. See development.md.
+// appVersion: 0.1.0
 package main
 
 import (
