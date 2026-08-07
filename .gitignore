@@ -1,0 +1,44 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/backend/url-shortener
+/backend/server
+/frontend/url-shortener
+/frontend/server
+/bin/
+/coverage/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Frontend (Svelte + Vite)
+frontend/web/node_modules/
+frontend/web/dist/
+frontend/dist/
+dist/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Local data / sqlite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/

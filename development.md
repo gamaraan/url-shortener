@@ -350,12 +350,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
 
 ### Phase 0 — Scaffolding
 
-- [ ] 0.1 Create the `backend/`, `frontend/`, and `charts/url-shortener/`
+- [x] 0.1 Create the `backend/`, `frontend/`, and `charts/url-shortener/`
       directories with `go.mod`/`package.json` stubs and an initial module
       path.
-- [ ] 0.2 Create `.gitignore` (Go binaries, `frontend/web/node_modules`,
+- [x] 0.2 Create `.gitignore` (Go binaries, `frontend/web/node_modules`,
       `frontend/web/dist`, `dist/`).
-- [ ] 0.3 Set up git identity per the `git-identity` skill
+- [x] 0.3 Set up git identity per the `git-identity` skill
       (`gamaraan` / `gabi.hulea@gmail.com`).
 
 ### Phase 1 — Database & migrations

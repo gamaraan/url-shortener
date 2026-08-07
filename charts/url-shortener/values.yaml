@@ -1,0 +1,58 @@
+# url-shortener Helm chart values.
+# Scaffolding stub — populated in Phase 6 per development.md.
+# Postgres credentials are NEVER committed here; they are supplied from
+# GitHub repository secrets at deploy time (see development.md §6).
+
+backend:
+  image:
+    repository: ghcr.io/gamaraan/url-shortener/backend
+    tag: ""  # set by CI (yyyy.mm.dd-xxxxxxxx)
+  replicas: 1
+  listenAddr: ":8080"
+  retentionPeriod: "3650d"
+  cleanupFrequency: "60m"
+  shortcodeLength: 7
+  logLevel: "info"
+  sqlitePath: "/data/url-shortener.db"
+  # Optional PVC for SQLite persistence (only useful when postgres.enabled is false).
+  persistence:
+    enabled: false
+
+frontend:
+  image:
+    repository: ghcr.io/gamaraan/url-shortener/frontend
+    tag: ""  # set by CI (yyyy.mm.dd-xxxxxxxx)
+  replicas: 1
+  listenAddr: ":8080"
+  backendURL: "http://backend:8080"
+
+postgres:
+  # When true, the chart creates a Secret with the credentials below and
+  # injects DATABASE_URL into the backend. When false, the backend falls
+  # back to a local SQLite file (single instance only).
+  enabled: true
+  # Credential VALUES are supplied at deploy time from GitHub secrets via
+  # --set/--set-string; they are never committed here.
+  host: ""       # POSTGRES_HOST
+  port: "5432"   # POSTGRES_PORT
+  database: "urlshortener"  # POSTGRES_DB
+  user: ""       # POSTGRES_USER
+  password: ""   # POSTGRES_PASSWORD
+  # Optional full libpq URL; overrides the composed POSTGRES_* form.
+  url: ""        # DATABASE_URL
+
+ingress:
+  enabled: true
+  className: "nginx"
+  host: "short.example.com"
+  tls:
+    enabled: true
+    clusterIssuer: "letsencrypt-prod"
+
+resources:
+  backend:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "250m", memory: "128Mi" }
+  frontend:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "250m", memory: "128Mi" }
