@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. Entries follow
 
 ## [Unreleased]
 
+### Removed
+
+- CI no longer deploys: the kubeconfig and `helm upgrade` steps are gone from
+  `build-deploy.yml`, which now only builds images and commits the image tags.
+  Flux in `gamaraan/gamara-k8s` deploys every `main` commit to the k3s cluster,
+  with the Postgres credentials from OpenBao. The `KUBECONFIG` and `POSTGRES_*`
+  repository secrets are no longer used.
+
 ### Added
 
 - `development.md` — detailed implementation plan (architecture, component

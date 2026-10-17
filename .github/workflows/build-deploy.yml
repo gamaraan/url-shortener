@@ -1,7 +1,7 @@
-# Build + deploy on main. Runs the mandatory unit-test gate first; on success,
-# builds/pushes per-service images to GHCR (only for changed folders), updates
-# the image tags in values.yaml, and deploys via Helm into the tinyurl
-# namespace. See development.md §6.2.
+# Build on main. Runs the mandatory unit-test gate first; on success,
+# builds/pushes per-service images to GHCR (only for changed folders) and
+# commits the new image tags to values.yaml. Flux in gamaraan/gamara-k8s
+# deploys every main commit. See development.md §6.2.
 name: build-deploy
 
 on:
@@ -178,9 +178,9 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/frontend:${{ steps.tag.outputs.tag }}
 
-  # --- update values.yaml tags and deploy via helm ---
+  # --- update values.yaml tags; Flux deploys the commit ---
   deploy:
-    name: helm deploy
+    name: update image tags
     needs: [changes, build-backend, build-frontend]
     # Run when change detection succeeded and no build job failed (skipped
     # builds are OK — they mean that service didn't change).
@@ -233,27 +233,3 @@ jobs:
             git commit -m "chore(chart): update image tags [skip ci]"
             git push
           fi
-      - name: configure kubeconfig
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.kube"
-          printf '%s' "${{ secrets.KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-          export KUBECONFIG="$HOME/.kube/config"
-          echo "KUBECONFIG=$KUBECONFIG" >> "$GITHUB_ENV"
-      - name: helm deploy
-        run: |
-          set -euo pipefail
-          # Build the postgres credential --set flags (postgres.enabled is true).
-          # Use --set-string for all credential values so Helm keeps them as
-          # strings (a bare --set parses numeric-looking values like the port
-          # "5432" as int, which then formats as %!s(int64=5432) in the
-          # DATABASE_URL helper and breaks the libpq URL).
-          helm upgrade --install url-shortener ./charts/url-shortener \
-            --namespace tinyurl --create-namespace \
-            -f ./charts/url-shortener/values.yaml \
-            --set-string postgres.host="${{ secrets.POSTGRES_HOST }}" \
-            --set-string postgres.port="${{ secrets.POSTGRES_PORT }}" \
-            --set-string postgres.database="${{ secrets.POSTGRES_DB }}" \
-            --set-string postgres.user="${{ secrets.POSTGRES_USER }}" \
-            --set-string postgres.password="${{ secrets.POSTGRES_PASSWORD }}"

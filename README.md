@@ -26,7 +26,7 @@ Shorten any URL, get back a short link, and resolve it with a brief themed
 - **Request logging** — every HTTP request is logged at INFO with `method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr` (structured `slog`).
 - **SQL-injection safe** — all queries use parameterized arguments; guard tests assert attacker payloads are stored/looked up as literal data.
 - **Helm chart** — Kubernetes-native deployment with liveness/readiness probes, `preStop` hooks, `terminationGracePeriodSeconds`, cert-manager TLS, and `postgres.enabled` gating.
-- **GitHub Actions CI/CD** — unit-test gate on feature branches; build + push to GHCR + `helm upgrade --install` on `main`, with per-folder image tagging and a chart-only guard.
+- **GitHub Actions CI/CD** — unit-test gate on feature branches; build + push to GHCR + image-tag commit on `main`, with per-folder image tagging; Flux deploys every `main` commit.
 
 ---
 
@@ -231,8 +231,9 @@ cd backend && DATABASE_URL=postgres://... go run ./cmd/server
 
 ### Helm chart (`charts/url-shortener/`)
 
-Targets a k0s single-node cluster with nginx ingress and cert-manager + Let's
-Encrypt. The chart deploys two Deployments (backend, frontend), their Services,
+Defaults target a single-node cluster with nginx ingress and cert-manager + Let's
+Encrypt; the live deployment overrides `ingress.className: traefik` and
+`ingress.tls.enabled: false` (TLS ends on the reverse proxy). The chart deploys two Deployments (backend, frontend), their Services,
 an Ingress (`/api` → backend, `/` → frontend, TLS via cert-manager), and a
 Postgres `Secret` + `DATABASE_URL` injection gated on `postgres.enabled`
 (default `true`). When `postgres.enabled` is false the backend falls back to
@@ -245,7 +246,8 @@ the graceful-shutdown contract.
 `values.yaml` is committed and is the source of truth for deployed image
 tags; CI updates the `tag` fields after each build. **Postgres credential
 values are never committed** — they are supplied at deploy time from GitHub
-repository secrets.
+repository secrets for a manual deploy; the live deployment reads them from
+OpenBao through the Flux HelmRelease in `gamaraan/gamara-k8s`.
 
 ### Manual deploy
 
@@ -274,8 +276,8 @@ Two workflows (see [`development.md`](./development.md) §6):
   unit-test gate, then per-service GHCR build+push with the
   `yyyy.mm.dd-xxxxxxxx` tag (date + 8-char short SHA of the latest commit
   **touching that folder**), a `values.yaml` tag update committed back to
-  `main`, and `helm upgrade --install` into `tinyurl`. A chart-only change
-  skips the image builds and runs only `helm upgrade` (tags unchanged).
+  `main`. Flux (`gamaraan/gamara-k8s`, `apps/tinyurl`) deploys every `main`
+  commit, so a chart-only change applies without a build.
 
 #### Image tagging
 
@@ -287,14 +289,10 @@ short commit SHA of the latest commit **touching that folder** (`backend/` or
 
 | Secret | Purpose |
 | --- | --- |
-| `KUBECONFIG` | Base64 kubeconfig for the cluster, used by `helm`. |
-| `GITHUB_TOKEN` | Push images to GHCR (the default workflow token with `packages: write`). |
-| `POSTGRES_HOST` | External Postgres host (`postgres.db.svc.cluster.local`). |
-| `POSTGRES_PORT` | `5432` |
-| `POSTGRES_DB` | `urlshortener` |
-| `POSTGRES_USER` | `urlshortener` |
-| `POSTGRES_PASSWORD` | App password. |
-| `DATABASE_URL` | Optional full libpq URL; overrides the composed `POSTGRES_*` form. |
+| `GITHUB_TOKEN` | Push images to GHCR and commit `values.yaml` (the default workflow token). |
+
+Postgres credentials are not GitHub secrets: they live in OpenBao
+(`kv/gamara-k3s/tinyurl/postgres`) and reach the chart through Flux `valuesFrom`.
 
 GHCR packages are public (the repo is public), so the cluster pulls them
 anonymously — no `imagePullSecret` is needed.
@@ -304,9 +302,9 @@ anonymously — no `imagePullSecret` is needed.
 ## Live environment
 
 - **URL**: <https://tinyurl.gamara.ro>
-- **Cluster**: `gamara.ro` (k0s single-node, nginx ingress, cert-manager + Let's Encrypt `letsencrypt-prod`).
+- **Cluster**: `gamara-k3s` (k3s single-node, Traefik; TLS on the OPNsense reverse proxy), deployed by Flux from `gamaraan/gamara-k8s`.
 - **App namespace**: `tinyurl`.
-- **PostgreSQL**: external, in the `db` namespace (`postgres.db.svc.cluster.local:5432`); dedicated `urlshortener` database + user, credentials in GitHub secrets (and locally in the gitignored `charts/url-shortener/.env`).
+- **PostgreSQL**: external, in the `db` namespace (`postgres.db.svc.cluster.local:5432`); dedicated `urlshortener` database + user, credentials in OpenBao (and locally in the gitignored `charts/url-shortener/.env`).
 - **Images**: `ghcr.io/gamaraan/url-shortener/backend:<tag>` and `…/frontend:<tag>`, built and pushed by the `build-deploy.yml` workflow on merge to `main`.
 
 ### Verify the live deployment
