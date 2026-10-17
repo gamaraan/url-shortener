@@ -110,7 +110,7 @@ background goroutine inside the backend service (not a separate folder/image).
   exceeds the limit the API responds **429 Too Many Requests** with JSON
   `{"error":"rate limit exceeded"}` and a `Retry-After` header (seconds until
   the bucket refills enough for one request). The limiter is in-process and
-  per-instance (sufficient for the single-node k0s target; documented as a
+  per-instance (sufficient for the single-node target; documented as a
   known limitation for multi-replica Postgres mode).
 - **Shortcode generation**: random base62 code (crypto/rand), length from
   `SHORTCODE_LENGTH` (default 7). **Uniqueness is guaranteed by the database**
@@ -318,10 +318,12 @@ zero-dependency path.
 
 ## 4. Helm chart (`charts/url-shortener/`)
 
-- Targets a **k0s single-node cluster with nginx ingress** and
-  **cert-manager + a Let's Encrypt ClusterIssuer** already installed.
-- `values.yaml` is committed and is the file the CI updates with image tags
-  before deploying.
+- Defaults target a **single-node cluster with nginx ingress** and
+  **cert-manager + a Let's Encrypt ClusterIssuer**. The live deployment (Flux,
+  `gamaraan/gamara-k8s`) sets `ingress.className: traefik` and
+  `ingress.tls.enabled: false`; TLS ends on the reverse proxy.
+- `values.yaml` is committed and is the file the CI updates with image tags;
+  Flux deploys from it.
 - Deployments (not separate Releases): two `Deployment` objects —
   `backend` and `frontend` — each with its own image tag and env config.
   **PostgreSQL is never deployed by this chart** — it is an external service.
@@ -404,7 +406,7 @@ Two workflows under `.github/workflows/`, both linted with **actionlint** and
     (committed).
 - **Concurrency**: cancel in-progress runs for the same branch on new pushes.
 
-### 6.2 `build-deploy.yml` — build + deploy on `main`
+### 6.2 `build-deploy.yml` — build + tag update on `main`
 
 - **Trigger**: push to `main` (includes merge commits) and manual dispatch.
 - **Mandatory gate**: run the same unit-test suites as §6.1 first; if any
@@ -412,9 +414,8 @@ Two workflows under `.github/workflows/`, both linted with **actionlint** and
 - **Steps**:
   1. **Detect changes** (`dorny/paths-filter` or `git diff` against the
      previous commit): determine whether `backend/**` and/or `frontend/**`
-     changed. If neither changed, skip build/deploy (a chart-only change still
-     triggers a `helm upgrade` so the new chart applies — see 6.2 step 5 and
-     task 7.2).
+     changed. If neither changed, skip the builds (a chart-only change needs no
+     CI step: Flux deploys every `main` commit).
   2. **Per-service build & push** (only for changed folders):
      - Log in to GHCR using the default `GITHUB_TOKEN` (`packages: write`).
      - Compute the folder-specific date + 8-char SHA tag (§5) from the latest
@@ -425,35 +426,22 @@ Two workflows under `.github/workflows/`, both linted with **actionlint** and
      `charts/url-shortener/values.yaml` and commit the file back to `main`
      (or pass via `--set` at deploy time). The committed `values.yaml` is the
      source of truth for deployed versions.
-  4. **Deploy with Helm**: configure kubeconfig from the `KUBECONFIG` secret
-     (base64-decoded), then
-     `helm upgrade --install url-shortener ./charts/url-shortener \
-       --namespace tinyurl --create-namespace \
-       -f ./charts/url-shortener/values.yaml`.
-     When `postgres.enabled` is true, pass the Postgres credentials from the
-     GitHub repository secrets (§6 secrets table) via `--set`/`--set-string`
-     so they are injected into the chart's Postgres `Secret` and from there
-     into the backend. When `postgres.enabled` is false, do not pass any
-     Postgres credentials.
-  5. **Chart-only guard**: if neither `backend/` nor `frontend/` changed but
-     `charts/**` did, skip the image builds and run only the `helm upgrade` so
-     the new chart applies (image tags unchanged).
+  4. **Deploy**: not in CI. Flux in `gamaraan/gamara-k8s` (`apps/tinyurl`)
+     watches `main` and installs the chart as a HelmRelease with
+     `reconcileStrategy: Revision`, so every commit (tag bump or chart change)
+     deploys. `postgres.user`/`postgres.password` come from OpenBao via
+     `valuesFrom`.
 - The workflow runs on `ubuntu-latest` and uses the GitHub-provided
-  `GITHUB_TOKEN` for GHCR. Helm is preinstalled on the runner; kubectl is
-  configured from the secret.
+  `GITHUB_TOKEN` for GHCR and for committing `values.yaml`.
 
 ### Required GitHub secrets
 
 | Secret | Purpose |
 | --- | --- |
-| `KUBECONFIG` | Base64 kubeconfig for the cluster, used by `helm`. |
-| `GITHUB_TOKEN` | Push images to GHCR (the default workflow token with `packages: write` is sufficient; no PAT secret needed). |
-| `POSTGRES_HOST` | External Postgres host (`postgres.db.svc.cluster.local`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_PORT` | External Postgres port (`5432`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_DB` | External Postgres database name (`urlshortener`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_USER` | External Postgres username (`urlshortener`). Used only when `postgres.enabled` is true. |
-| `POSTGRES_PASSWORD` | External Postgres password. Used only when `postgres.enabled` is true. |
-| `DATABASE_URL` | Optional full libpq URL; overrides the composed `POSTGRES_*` form when provided. Used only when `postgres.enabled` is true. |
+| `GITHUB_TOKEN` | Push images to GHCR and commit `values.yaml` (the default workflow token is sufficient; no PAT secret needed). |
+
+Postgres credentials are not GitHub secrets: they live in OpenBao
+(`kv/gamara-k3s/tinyurl/postgres`) and reach the chart through Flux `valuesFrom`.
 
 ## 7. Skill and guardrail wiring
 
@@ -738,6 +726,12 @@ the `follow-development-plan` skill) — facts only, no narrative.
 - [x] 9.3 Document the duration-string grammar and fallback behavior (in
       README and `development.md` §3.1).
 
+### Phase 10 — Deploy via Flux
+
+- [x] 10.1 Remove the kubeconfig and `helm upgrade` steps from
+      `build-deploy.yml`; CI only builds images and commits the tags. Flux in
+      `gamaraan/gamara-k8s` deploys `main`.
+
 ## 9. Out of scope (explicit)
 
 - Authentication / per-user link ownership.
@@ -747,5 +741,5 @@ the `follow-development-plan` skill) — facts only, no narrative.
   external service).
 - Multi-region or HA Postgres.
 - A distributed/cluster-wide rate limiter — the in-process per-instance
-  limiter (§3.1) is sufficient for the single-node k0s target and is a known
+  limiter (§3.1) is sufficient for the single-node target and is a known
   approximation under multi-replica Postgres mode.
